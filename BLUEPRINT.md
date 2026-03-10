@@ -514,6 +514,353 @@ Generate all media assets — images, video clips, voice, music, SFX — and com
 
 **Solution: GPU Slot System — one model at a time, full VRAM flush between each.**
 
+#### GPU Logging System (`src/utils/gpu_logger.py`) 📋
+
+**Every single GPU operation is logged. No exceptions.**
+
+```python
+import logging
+import time
+import torch
+import json
+from datetime import datetime
+from pathlib import Path
+
+class GPULogger:
+    """
+    Precision logging for every GPU model operation.
+    In single-GPU environment, one unlogged VRAM leak = full pipeline crash.
+    """
+    
+    def __init__(self, job_id: str):
+        self.job_id = job_id
+        self.session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+        # File logger — persistent, survives crashes
+        self.file_logger = logging.getLogger(f"gpu.{job_id}")
+        handler = logging.FileHandler(
+            f"logs/gpu/{self.session_id}_{job_id}.log",
+            encoding="utf-8"
+        )
+        handler.setFormatter(logging.Formatter(
+            "%(asctime)s.%(msecs)03d | %(levelname)-7s | %(message)s",
+            datefmt="%H:%M:%S"
+        ))
+        self.file_logger.addHandler(handler)
+        self.file_logger.setLevel(logging.DEBUG)
+        
+        # Structured event log — for dashboard + post-mortem analysis
+        self.events_path = Path(f"logs/gpu/{self.session_id}_{job_id}_events.jsonl")
+        
+        # VRAM snapshots — continuous timeline
+        self.snapshots_path = Path(f"logs/gpu/{self.session_id}_{job_id}_vram.csv")
+        self._init_vram_csv()
+    
+    def _get_vram_state(self) -> dict:
+        """Snapshot current VRAM state from nvidia-smi level."""
+        free, total = torch.cuda.mem_get_info()
+        allocated = torch.cuda.memory_allocated()
+        reserved = torch.cuda.memory_reserved()
+        return {
+            "total_gb": round(total / 1e9, 2),
+            "free_gb": round(free / 1e9, 2),
+            "used_gb": round((total - free) / 1e9, 2),
+            "allocated_gb": round(allocated / 1e9, 2),
+            "reserved_gb": round(reserved / 1e9, 2),
+            "fragmented_gb": round((reserved - allocated) / 1e9, 2),
+            "usage_pct": round((1 - free / total) * 100, 1),
+            "temp_c": self._get_gpu_temp()
+        }
+    
+    def _get_gpu_temp(self) -> int:
+        """GPU temperature — overheating = throttling = slower generation."""
+        try:
+            import subprocess
+            result = subprocess.run(
+                ["nvidia-smi", "--query-gpu=temperature.gpu", "--format=csv,noheader"],
+                capture_output=True, text=True, timeout=5
+            )
+            return int(result.stdout.strip())
+        except:
+            return -1
+    
+    def _log_event(self, event_type: str, data: dict):
+        """Append structured event to JSONL file."""
+        event = {
+            "timestamp": datetime.now().isoformat(),
+            "job_id": self.job_id,
+            "event": event_type,
+            "vram": self._get_vram_state(),
+            **data
+        }
+        with open(self.events_path, "a") as f:
+            f.write(json.dumps(event, ensure_ascii=False) + "\n")
+    
+    # ─── Model Lifecycle Logging ───────────────────────────
+    
+    def log_model_load_start(self, model_name: str, model_type: str, expected_vram_gb: float):
+        vram = self._get_vram_state()
+        self.file_logger.info(
+            f"🔄 LOAD START | model={model_name} | type={model_type} | "
+            f"expected_vram={expected_vram_gb}GB | "
+            f"available_vram={vram['free_gb']}GB | temp={vram['temp_c']}°C"
+        )
+        if vram['free_gb'] < expected_vram_gb:
+            self.file_logger.critical(
+                f"⛔ INSUFFICIENT VRAM! Need {expected_vram_gb}GB but only {vram['free_gb']}GB free!"
+            )
+        self._log_event("model_load_start", {
+            "model": model_name, "type": model_type,
+            "expected_vram_gb": expected_vram_gb
+        })
+        return time.time()
+    
+    def log_model_load_end(self, model_name: str, start_time: float, success: bool):
+        elapsed = round(time.time() - start_time, 2)
+        vram = self._get_vram_state()
+        status = "✅ SUCCESS" if success else "❌ FAILED"
+        self.file_logger.info(
+            f"{status} LOAD | model={model_name} | "
+            f"took={elapsed}s | vram_used={vram['used_gb']}GB ({vram['usage_pct']}%) | "
+            f"temp={vram['temp_c']}°C"
+        )
+        self._log_event("model_load_end", {
+            "model": model_name, "success": success,
+            "elapsed_sec": elapsed
+        })
+    
+    def log_model_unload_start(self, model_name: str):
+        vram = self._get_vram_state()
+        self.file_logger.info(
+            f"🗑️ UNLOAD START | model={model_name} | "
+            f"vram_before={vram['used_gb']}GB ({vram['usage_pct']}%)"
+        )
+        self._log_event("model_unload_start", {"model": model_name})
+        return time.time()
+    
+    def log_model_unload_end(self, model_name: str, start_time: float):
+        elapsed = round(time.time() - start_time, 2)
+        vram = self._get_vram_state()
+        
+        # CRITICAL CHECK: Did VRAM actually free?
+        if vram['usage_pct'] > 15:  # >15% still used after unload = LEAK
+            self.file_logger.critical(
+                f"🚨 VRAM LEAK DETECTED! After unloading {model_name}: "
+                f"still {vram['used_gb']}GB used ({vram['usage_pct']}%)"
+            )
+            self._log_event("vram_leak_detected", {
+                "model": model_name, "leaked_gb": vram['used_gb']
+            })
+        else:
+            self.file_logger.info(
+                f"✅ UNLOAD COMPLETE | model={model_name} | "
+                f"took={elapsed}s | vram_after={vram['used_gb']}GB ({vram['usage_pct']}%)"
+            )
+        self._log_event("model_unload_end", {
+            "model": model_name, "elapsed_sec": elapsed
+        })
+    
+    # ─── Generation Task Logging ───────────────────────────
+    
+    def log_generation_start(self, model_name: str, task: str, batch_size: int):
+        vram = self._get_vram_state()
+        self.file_logger.info(
+            f"⚡ GEN START | model={model_name} | task={task} | "
+            f"batch={batch_size} | vram={vram['used_gb']}GB | temp={vram['temp_c']}°C"
+        )
+        self._log_event("generation_start", {
+            "model": model_name, "task": task, "batch_size": batch_size
+        })
+        return time.time()
+    
+    def log_generation_progress(self, model_name: str, current: int, total: int):
+        vram = self._get_vram_state()
+        pct = round(current / total * 100, 1)
+        self.file_logger.info(
+            f"📊 PROGRESS | model={model_name} | {current}/{total} ({pct}%) | "
+            f"vram={vram['used_gb']}GB ({vram['usage_pct']}%) | temp={vram['temp_c']}°C"
+        )
+        # Alert if VRAM creeping up during batch (memory leak within generation)
+        if vram['usage_pct'] > 85:
+            self.file_logger.warning(
+                f"⚠️ VRAM HIGH during generation! {vram['usage_pct']}% — potential leak"
+            )
+        if vram['temp_c'] > 85:
+            self.file_logger.warning(
+                f"🌡️ GPU HOT! {vram['temp_c']}°C — may throttle"
+            )
+        self._log_event("generation_progress", {
+            "model": model_name, "current": current, "total": total
+        })
+    
+    def log_generation_end(self, model_name: str, task: str, start_time: float, 
+                           success: bool, items_produced: int):
+        elapsed = round(time.time() - start_time, 2)
+        rate = round(items_produced / elapsed * 60, 1) if elapsed > 0 else 0
+        vram = self._get_vram_state()
+        status = "✅" if success else "❌"
+        self.file_logger.info(
+            f"{status} GEN END | model={model_name} | task={task} | "
+            f"produced={items_produced} | took={elapsed}s | rate={rate}/min | "
+            f"vram={vram['used_gb']}GB | temp={vram['temp_c']}°C"
+        )
+        self._log_event("generation_end", {
+            "model": model_name, "task": task, "success": success,
+            "items_produced": items_produced, "elapsed_sec": elapsed,
+            "rate_per_min": rate
+        })
+    
+    # ─── VRAM Emergency Logging ────────────────────────────
+    
+    def log_vram_flush(self, reason: str, before_gb: float, after_gb: float):
+        self.file_logger.warning(
+            f"🔧 VRAM FLUSH | reason={reason} | "
+            f"before={before_gb}GB → after={after_gb}GB | "
+            f"freed={round(before_gb - after_gb, 2)}GB"
+        )
+        self._log_event("vram_flush", {
+            "reason": reason, "before_gb": before_gb, "after_gb": after_gb
+        })
+    
+    def log_oom_event(self, model_name: str, task: str, vram_state: dict):
+        self.file_logger.critical(
+            f"💥 OOM EVENT | model={model_name} | task={task} | "
+            f"vram={vram_state['used_gb']}GB/{vram_state['total_gb']}GB | "
+            f"temp={vram_state['temp_c']}°C"
+        )
+        self._log_event("oom_event", {
+            "model": model_name, "task": task
+        })
+    
+    def log_gpu_reset(self, reason: str):
+        self.file_logger.critical(
+            f"🔴 GPU RESET | reason={reason} | nvidia-smi --gpu-reset executed"
+        )
+        self._log_event("gpu_reset", {"reason": reason})
+    
+    # ─── VRAM Continuous Snapshots ─────────────────────────
+    
+    def _init_vram_csv(self):
+        with open(self.snapshots_path, "w") as f:
+            f.write("timestamp,used_gb,free_gb,allocated_gb,reserved_gb,fragmented_gb,usage_pct,temp_c,active_model\n")
+    
+    def snapshot_vram(self, active_model: str = "none"):
+        """Called every 5 seconds by VRAMMonitor — builds continuous timeline."""
+        vram = self._get_vram_state()
+        with open(self.snapshots_path, "a") as f:
+            f.write(
+                f"{datetime.now().isoformat()},"
+                f"{vram['used_gb']},{vram['free_gb']},"
+                f"{vram['allocated_gb']},{vram['reserved_gb']},"
+                f"{vram['fragmented_gb']},{vram['usage_pct']},"
+                f"{vram['temp_c']},{active_model}\n"
+            )
+```
+
+#### Log Output Example (real production run)
+```
+14:00:01.234 | INFO    | 🔄 LOAD START | model=qwen2.5:72b | type=llm | expected_vram=16GB | available_vram=23.5GB | temp=42°C
+14:00:46.891 | INFO    | ✅ SUCCESS LOAD | model=qwen2.5:72b | took=45.66s | vram_used=15.8GB (65.8%) | temp=48°C
+14:00:47.001 | INFO    | ⚡ GEN START | model=qwen2.5:72b | task=script_writing | batch=1 | vram=15.8GB | temp=48°C
+14:15:22.445 | INFO    | ✅ GEN END | model=qwen2.5:72b | task=script_writing | produced=1 | took=875.44s | rate=0.1/min | vram=15.9GB | temp=61°C
+14:15:22.500 | INFO    | ⚡ GEN START | model=qwen2.5:72b | task=scene_splitting | batch=1 | vram=15.9GB | temp=61°C
+14:17:55.100 | INFO    | ✅ GEN END | model=qwen2.5:72b | task=scene_splitting | produced=62 | took=152.6s | rate=24.4/min | vram=15.9GB | temp=63°C
+14:17:55.200 | INFO    | 🗑️ UNLOAD START | model=qwen2.5:72b | vram_before=15.9GB (66.3%)
+14:17:58.500 | INFO    | ✅ UNLOAD COMPLETE | model=qwen2.5:72b | took=3.3s | vram_after=0.4GB (1.7%)
+14:17:58.600 | INFO    | 🔄 LOAD START | model=FLUX.1-dev | type=comfyui | expected_vram=12GB | available_vram=23.2GB | temp=52°C
+14:18:13.200 | INFO    | ✅ SUCCESS LOAD | model=FLUX.1-dev | took=14.6s | vram_used=12.1GB (50.4%) | temp=54°C
+14:18:13.300 | INFO    | ⚡ GEN START | model=FLUX.1-dev | task=scene_images | batch=62 | vram=12.1GB | temp=54°C
+14:18:43.500 | INFO    | 📊 PROGRESS | model=FLUX.1-dev | 5/62 (8.1%) | vram=12.3GB (51.3%) | temp=67°C
+14:19:13.700 | INFO    | 📊 PROGRESS | model=FLUX.1-dev | 10/62 (16.1%) | vram=12.3GB (51.3%) | temp=71°C
+...
+14:48:22.100 | INFO    | 📊 PROGRESS | model=FLUX.1-dev | 60/62 (96.8%) | vram=12.5GB (52.1%) | temp=76°C
+14:48:44.300 | WARNING | ⚠️ VRAM HIGH during generation! 87.2% — potential leak
+14:48:50.900 | INFO    | ✅ GEN END | model=FLUX.1-dev | task=scene_images | produced=62 | took=1837.6s | rate=2.0/min | vram=12.5GB | temp=77°C
+```
+
+#### Log Files Structure
+```
+logs/
+├── gpu/
+│   ├── 20260310_060000_job_042.log           # Human-readable full log
+│   ├── 20260310_060000_job_042_events.jsonl   # Structured events (for dashboard)
+│   ├── 20260310_060000_job_042_vram.csv       # VRAM timeline (for graphs)
+│   ├── 20260310_093000_job_043.log
+│   └── ...
+├── pipeline/
+│   ├── 20260310_job_042.log                   # Phase-level pipeline log
+│   └── ...
+└── alerts/
+    ├── oom_events.jsonl                        # All OOM events (critical review)
+    ├── vram_leaks.jsonl                        # All detected leaks
+    └── gpu_resets.jsonl                        # All forced GPU resets
+```
+
+#### Dashboard Integration (Optional)
+```python
+# FastAPI endpoint: real-time GPU status
+@app.get("/api/gpu/status")
+def gpu_status():
+    vram = gpu_logger._get_vram_state()
+    return {
+        "vram": vram,
+        "active_model": gpu_manager.current_name,
+        "current_task": pipeline.current_task,
+        "uptime_hours": get_uptime(),
+        "today_stats": {
+            "models_loaded": count_events("model_load_end", today=True),
+            "oom_events": count_events("oom_event", today=True),
+            "vram_leaks": count_events("vram_leak_detected", today=True),
+            "total_generation_time_min": sum_generation_time(today=True)
+        }
+    }
+
+# Telegram alert: immediate notification for critical events
+def on_critical_event(event):
+    if event["event"] in ["oom_event", "vram_leak_detected", "gpu_reset"]:
+        send_telegram(
+            f"🚨 GPU ALERT\n"
+            f"Event: {event['event']}\n"
+            f"Model: {event.get('model', 'N/A')}\n"
+            f"VRAM: {event['vram']['used_gb']}GB / {event['vram']['total_gb']}GB\n"
+            f"Temp: {event['vram']['temp_c']}°C\n"
+            f"Time: {event['timestamp']}"
+        )
+```
+
+#### Post-Mortem Analysis Tools
+```python
+# بعد كل فيديو — تقرير أداء GPU
+def generate_gpu_report(job_id: str) -> dict:
+    events = load_events(job_id)
+    vram_timeline = load_vram_csv(job_id)
+    
+    return {
+        "job_id": job_id,
+        "total_time_min": calculate_total_time(events),
+        "model_swaps": count_events_type(events, "model_load_start"),
+        "total_swap_time_sec": sum_swap_times(events),
+        "peak_vram_gb": vram_timeline["used_gb"].max(),
+        "peak_temp_c": vram_timeline["temp_c"].max(),
+        "avg_temp_c": vram_timeline["temp_c"].mean(),
+        "oom_events": count_events_type(events, "oom_event"),
+        "vram_leaks": count_events_type(events, "vram_leak_detected"),
+        "vram_flushes": count_events_type(events, "vram_flush"),
+        "generation_breakdown": {
+            model: {
+                "time_sec": sum_gen_time(events, model),
+                "items": sum_gen_items(events, model),
+                "rate_per_min": calc_rate(events, model)
+            }
+            for model in get_unique_models(events)
+        },
+        "health_score": calculate_health_score(events)
+        # 100 = perfect (no leaks, no OOM, no resets)
+        # <80 = needs investigation
+        # <50 = critical — pipeline unreliable
+    }
+```
+
 #### Memory Manager (`src/utils/gpu_manager.py`)
 ```python
 class GPUMemoryManager:
@@ -1108,6 +1455,7 @@ ai-video-factory/
 │   │   ├── algo_tracker.py     # YouTube algorithm change detection
 │   │   └── ab_testing.py       # A/B script testing framework
 │   └── utils/
+│       ├── gpu_logger.py       # Precision GPU logging (every load/unload/gen/OOM/leak)
 │       ├── gpu_manager.py      # VRAM memory manager (load/unload/flush/monitor)
 │       ├── content_id_guard.py # Audio fingerprint + Content ID protection
 │       ├── gpu_scheduler.py    # GPU task queue (sequential, batched by model)
@@ -1122,6 +1470,10 @@ ai-video-factory/
 │   ├── sfx_library/            # Pre-downloaded SFX
 │   ├── fonts/                  # Arabic fonts (Cairo, Tajawal, etc.)
 │   └── competitor_data/        # Tracked competitor channel data
+├── logs/
+│   ├── gpu/                    # Per-job GPU logs (.log + .jsonl + .csv)
+│   ├── pipeline/               # Phase-level pipeline logs
+│   └── alerts/                 # Critical events (OOM, leaks, resets)
 ├── output/
 │   ├── research/               # Research documents
 │   ├── scripts/                # Written scripts
