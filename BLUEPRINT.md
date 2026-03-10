@@ -345,6 +345,123 @@ Generate all media assets — images, video clips, voice, music, SFX — and com
     - `"tense suspenseful music, news documentary style"`
 - **Output:** WAV tracks for different sections
 
+#### 5.4.1 Content ID Protection System 🛡️⚠️
+- **Problem:** YouTube Content ID يكتشف تشابه موسيقي حتى مع مقاطع AI-generated. خوارزمية Shorts أشد حساسية من الفيديوهات العادية. Claim واحد = demonetization أو حذف.
+- **Protection layers:**
+
+  **Layer 1: Generation Safeguards (قبل التوليد)**
+  - Negative prompts إجبارية:
+    ```
+    ALWAYS INCLUDE in MusicGen prompt:
+    "original composition, no covers, no samples, no existing melodies,
+     no copyrighted material, unique musical arrangement"
+    
+    NEVER INCLUDE:
+    - اسم أي فنان أو فرقة
+    - اسم أي أغنية معروفة
+    - "style of [artist]" أو "like [song]"
+    - أي مرجع لموسيقى محمية بحقوق نشر
+    ```
+  - MusicGen temperature: 0.8-1.0 (أعلى = أكثر originality, أقل تشابه)
+  - Seed عشوائي لكل generation (لا يتكرر pattern)
+
+  **Layer 2: Audio Fingerprint Check (بعد التوليد — قبل الاستخدام)**
+  - **أداة:** `audfprint` (open-source audio fingerprinting) أو Chromaprint/AcoustID
+  - **Process:**
+    1. توليد الموسيقى → حفظ WAV مؤقت
+    2. استخراج audio fingerprint
+    3. مقارنة مع قاعدة بيانات محلية:
+       - أرشيف كل الموسيقى المولّدة سابقاً (لا نكرر أنفسنا)
+       - عينات من أشهر 10,000 أغنية عربية (top Arabic songs fingerprints)
+       - عينات من أشهر الموسيقى الغربية المستخدمة بالـ documentaries
+    4. **Similarity score:**
+       ```
+       Score < 0.15  → ✅ SAFE — مختلف تماماً
+       Score 0.15-0.30 → ⚠️ WARNING — يعيد التوليد بـ seed مختلف
+       Score > 0.30  → ❌ REJECT — يعيد التوليد بـ prompt مختلف كلياً
+       ```
+  - **خاص بالـ Shorts:** threshold أشد (< 0.10) لأن خوارزمية Shorts أكثر حساسية
+
+  **Layer 3: Spectral Analysis (طبقة إضافية)**
+  - تحليل الـ spectrogram للمقطع المولّد
+  - كشف أي melodic patterns متكررة تشبه أغاني مشهورة
+  - يركّز على:
+    - Melody contour (شكل اللحن — أخطر عنصر بالـ Content ID)
+    - Chord progressions (بعض التسلسلات مشهورة جداً)
+    - Rhythmic patterns (إيقاعات مميزة لأغاني معينة)
+  - **أداة:** `librosa` (Python) لاستخراج:
+    ```python
+    # استخراج الـ melody contour
+    pitches, magnitudes = librosa.piptrack(y=audio, sr=sr)
+    # استخراج الـ chroma features (chord detection)
+    chroma = librosa.feature.chroma_stft(y=audio, sr=sr)
+    # مقارنة مع قاعدة البيانات
+    similarity = compare_contours(generated_contour, known_contours_db)
+    ```
+
+  **Layer 4: YouTube Pre-check (اختياري — طبقة أخيرة)**
+  - قبل النشر العام: رفع الفيديو كـ **unlisted** على YouTube
+  - انتظار 10-30 دقيقة → YouTube يفحص Content ID
+  - التحقق عبر YouTube API:
+    ```python
+    # Check for copyright claims on uploaded video
+    claims = youtube_api.videos().list(
+        part="contentDetails,status",
+        id=video_id
+    ).execute()
+    
+    if claims['items'][0]['contentDetails'].get('contentRating'):
+        # Has claim → don't publish
+        alert_yusif("⚠️ Content ID claim detected on music")
+        # Re-generate music → re-compose → re-upload
+    else:
+        # Clean → change to public/scheduled
+        youtube_api.videos().update(
+            part="status",
+            body={"id": video_id, "status": {"privacyStatus": "scheduled"}}
+        )
+    ```
+  - **هذي أقوى طبقة** — تستخدم نفس نظام YouTube الفعلي
+
+  **Layer 5: Music Variation & Manipulation (تعديلات ما بعد التوليد)**
+  - حتى بعد التوليد، نعدّل المقطع ليبتعد أكثر عن أي تشابه:
+    ```
+    - Pitch shift: ±1-2 semitones (تغيير طبقة الصوت بشكل طفيف)
+    - Time stretch: ±5-10% (تغيير السرعة بدون تغيير الـ pitch)
+    - Reverb/Echo: إضافة صدى خفيف (يغيّر الـ fingerprint)
+    - EQ adjustment: تعديل الترددات (يبعد عن الـ original fingerprint)
+    - Layer mixing: دمج 2 مقطع مولّد مع بعض (creates unique hybrid)
+    ```
+  - هذي التعديلات تصعّب على Content ID الكشف حتى لو كان تشابه أصلي
+
+- **Database: `data/audio_fingerprints.db`**
+  ```sql
+  CREATE TABLE fingerprints (
+    id INTEGER PRIMARY KEY,
+    source TEXT,          -- 'generated', 'arabic_top', 'western_top', 'documentary_common'
+    title TEXT,
+    artist TEXT,
+    fingerprint BLOB,
+    melody_contour BLOB,
+    chroma_features BLOB,
+    created_at TIMESTAMP
+  );
+  
+  CREATE TABLE content_id_results (
+    video_id TEXT,
+    music_track_id TEXT,
+    youtube_claim BOOLEAN,
+    claim_details TEXT,
+    checked_at TIMESTAMP
+  );
+  ```
+
+- **Initialization (one-time setup):**
+  1. تنزيل fingerprints لأشهر 10K أغنية عربية (via AcoustID database)
+  2. تنزيل fingerprints لأشهر documentary music tracks
+  3. بناء الـ local comparison database
+  4. تقدير: ~2GB database, ~1 hour setup
+
 #### 5.5 SFX Generator (AudioCraft)
 - **Model:** AudioGen (part of AudioCraft) — local
 - **VRAM:** ~4GB (shared with MusicGen)
@@ -352,6 +469,7 @@ Generate all media assets — images, video clips, voice, music, SFX — and com
   - Example: `"crowd cheering"` → generates crowd audio
   - Example: `"explosion in distance"` → generates explosion SFX
 - **Fallback library:** Pre-downloaded SFX from Freesound.org for common sounds
+- **Content ID note:** SFX أقل خطورة من الموسيقى، لكن نفس الـ fingerprint check يطبّق عليها
 - **Output:** WAV SFX files per scene
 
 #### 5.6 Video Composer (FFmpeg + Python)
@@ -991,6 +1109,7 @@ ai-video-factory/
 │   │   └── ab_testing.py       # A/B script testing framework
 │   └── utils/
 │       ├── gpu_manager.py      # VRAM memory manager (load/unload/flush/monitor)
+│       ├── content_id_guard.py # Audio fingerprint + Content ID protection
 │       ├── gpu_scheduler.py    # GPU task queue (sequential, batched by model)
 │       ├── database.py         # SQLite operations
 │       ├── telegram_bot.py     # Notifications
@@ -998,6 +1117,7 @@ ai-video-factory/
 │       └── retry.py            # Retry logic for failed steps
 ├── data/
 │   ├── jobs.db                 # SQLite database
+│   ├── audio_fingerprints.db   # Content ID protection fingerprint database
 │   ├── seo_cache/              # Cached keyword research
 │   ├── sfx_library/            # Pre-downloaded SFX
 │   ├── fonts/                  # Arabic fonts (Cairo, Tajawal, etc.)
@@ -1266,6 +1386,7 @@ NEXT DAY:
 | 5 - Video | LTX-2.3 fails | Fallback: Ken Burns on FLUX image |
 | 5 - Voice | Fish Speech glitch | Re-generate. Fallback: ElevenLabs API |
 | 5 - Music | MusicGen fails | Fallback: pre-made royalty-free tracks |
+| 5 - Music | Content ID claim detected | Re-generate with different seed/prompt + pitch shift + re-check |
 | 5 - Compose | FFmpeg error | Log error, retry with adjusted parameters |
 | 6 - Visual QA | Images don't match | Regenerate failed images (max 2 rounds) |
 | 7 - Video QA | A/V sync off | Re-compose with adjusted timing |
