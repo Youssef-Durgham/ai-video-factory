@@ -1843,6 +1843,46 @@ CREATE TABLE compliance_checks (
 );
 ```
 
+#### `qa_rubrics` — Full QA rubric storage for every asset check
+```sql
+CREATE TABLE qa_rubrics (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id TEXT REFERENCES jobs(id),
+    scene_index INTEGER,                -- NULL for job-level checks (final video)
+    asset_type TEXT NOT NULL,            -- 'image' | 'video' | 'thumbnail' | 'final_video'
+    check_phase TEXT NOT NULL,           -- 'phase6a' | 'phase6b' | 'phase7' | 'phase8'
+    attempt_number INTEGER DEFAULT 1,    -- Which attempt (1st, 2nd after regen...)
+    
+    -- Layer 1: Deterministic results
+    deterministic_results JSON,          -- {text_detected, nsfw_score, blur_score, artifacts: [...]}
+    deterministic_pass BOOLEAN,
+    hard_fail_reason TEXT,               -- NULL if passed
+    
+    -- Layer 2: Vision rubric (per-axis scores)
+    rubric_scores JSON,                  -- {axis_name: {score, reasoning, confidence}, ...}
+    
+    -- Layer 3: Combined verdict
+    weighted_score REAL,                 -- Deterministic formula result
+    final_verdict TEXT NOT NULL,          -- 'pass'|'regen_adjust'|'regen_new'|'fail'|'flag_human'
+    flags JSON,                          -- ["low_confidence_composition", "near_threshold", ...]
+    
+    -- Metadata
+    model_used TEXT,                     -- 'qwen2.5-vl:72b'
+    inference_time_ms INTEGER,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX idx_rubrics_job ON qa_rubrics(job_id);
+CREATE INDEX idx_rubrics_verdict ON qa_rubrics(final_verdict);
+```
+
+**Why store everything?** Phase 9 uses rubric history to:
+- Learn which FLUX prompts produce low-scoring images → improve prompt templates
+- Track which axes are weak (e.g., always low on "composition") → adjust weights
+- Measure regen rates → optimize pipeline speed
+- Identify patterns: "political topics always need more retries" → adjust thresholds
+
+---
+
 #### `audio_tracks` — Music + SFX with Content ID protection
 ```sql
 CREATE TABLE audio_tracks (

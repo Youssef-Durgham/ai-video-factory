@@ -1590,6 +1590,98 @@ class FactoryDB:
         )
         self.conn.commit()
     
+    # ─── QA Rubric Storage ─────────────────────────────
+    # Stores FULL rubric output for every QA check — not just final score.
+    # Enables: post-mortem analysis, template improvement, Phase 9 learning.
+    
+    QA_RUBRICS_SCHEMA = """
+    CREATE TABLE IF NOT EXISTS qa_rubrics (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        job_id TEXT NOT NULL,
+        scene_index INTEGER,                -- NULL for job-level checks
+        asset_type TEXT NOT NULL,            -- 'image' | 'video' | 'thumbnail' | 'final_video'
+        check_phase TEXT NOT NULL,           -- 'phase6a' | 'phase6b' | 'phase7' | 'phase8'
+        attempt_number INTEGER DEFAULT 1,    -- Which try (1st, 2nd after regen...)
+        
+        -- Deterministic layer results
+        deterministic_results JSON,          -- {text_detected, nsfw_score, blur_score, ...}
+        deterministic_pass BOOLEAN,          -- Did it pass hard rules?
+        hard_fail_reason TEXT,               -- NULL if passed, else reason
+        
+        -- Vision rubric (per-axis)
+        rubric_scores JSON,                  -- {axis: {score, reasoning, confidence}, ...}
+        -- Example: {
+        --   "semantic_match": {"score": 8.5, "reasoning": "Image shows...", "confidence": "high"},
+        --   "composition": {"score": 7.0, "reasoning": "Good framing...", "confidence": "medium"},
+        --   ...
+        -- }
+        
+        -- Combined verdict
+        weighted_score REAL,                 -- Calculated from rubric_scores
+        final_verdict TEXT NOT NULL,          -- 'pass' | 'regen_adjust' | 'regen_new' | 'fail' | 'flag_human'
+        flags JSON,                          -- ["low_confidence_composition", "near_threshold", ...]
+        
+        -- Metadata
+        model_used TEXT,                     -- 'qwen2.5-vl:72b'
+        inference_time_ms INTEGER,           -- How long the vision check took
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        
+        FOREIGN KEY (job_id) REFERENCES jobs(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_rubrics_job ON qa_rubrics(job_id);
+    CREATE INDEX IF NOT EXISTS idx_rubrics_scene ON qa_rubrics(job_id, scene_index);
+    CREATE INDEX IF NOT EXISTS idx_rubrics_verdict ON qa_rubrics(final_verdict);
+    CREATE INDEX IF NOT EXISTS idx_rubrics_phase ON qa_rubrics(check_phase);
+    """
+    
+    def save_rubric(self, job_id: str, scene_index: int, asset_type: str,
+                    check_phase: str, attempt: int, deterministic: dict,
+                    rubric_scores: dict, weighted_score: float, verdict: str,
+                    flags: list, hard_fail: str = None, model: str = "qwen2.5-vl:72b",
+                    inference_ms: int = 0):
+        """Save complete QA rubric for a scene/asset."""
+        self.conn.execute("""
+            INSERT INTO qa_rubrics (job_id, scene_index, asset_type, check_phase,
+                attempt_number, deterministic_results, deterministic_pass, hard_fail_reason,
+                rubric_scores, weighted_score, final_verdict, flags, model_used, inference_time_ms)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            job_id, scene_index, asset_type, check_phase, attempt,
+            json.dumps(deterministic), hard_fail is None, hard_fail,
+            json.dumps(rubric_scores), weighted_score, verdict,
+            json.dumps(flags), model, inference_ms
+        ))
+        self.conn.commit()
+    
+    def get_rubrics(self, job_id: str, scene_index: int = None,
+                    asset_type: str = None) -> list[dict]:
+        """Get rubrics for analysis. Filter by scene/type."""
+        query = "SELECT * FROM qa_rubrics WHERE job_id = ?"
+        params = [job_id]
+        if scene_index is not None:
+            query += " AND scene_index = ?"
+            params.append(scene_index)
+        if asset_type:
+            query += " AND asset_type = ?"
+            params.append(asset_type)
+        query += " ORDER BY scene_index, attempt_number"
+        return [dict(r) for r in self.conn.execute(query, params).fetchall()]
+    
+    def get_rubric_stats(self, job_id: str) -> dict:
+        """Aggregate rubric stats for a job — for Phase 9 learning."""
+        rows = self.conn.execute("""
+            SELECT asset_type, check_phase,
+                   COUNT(*) as total,
+                   AVG(weighted_score) as avg_score,
+                   SUM(CASE WHEN final_verdict = 'pass' THEN 1 ELSE 0 END) as pass_count,
+                   SUM(CASE WHEN hard_fail_reason IS NOT NULL THEN 1 ELSE 0 END) as hard_fails,
+                   SUM(CASE WHEN final_verdict = 'flag_human' THEN 1 ELSE 0 END) as human_flags,
+                   AVG(attempt_number) as avg_attempts
+            FROM qa_rubrics WHERE job_id = ?
+            GROUP BY asset_type, check_phase
+        """, (job_id,)).fetchall()
+        return [dict(r) for r in rows]
+    
     # ─── Analytics ─────────────────────────────────────
     
     def save_analytics(self, job_id: str, period: str, metrics: dict):
