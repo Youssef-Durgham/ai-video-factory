@@ -512,62 +512,147 @@ Generate all media assets — images, video clips, voice, music, SFX — and com
 - **Model:** Fish Speech / OpenAudio S1 (local)
 - **VRAM:** ~4GB
 
-##### 5.3.1 Pre-Built Voice Library
-- **النظام يستخدم مكتبة أصوات جاهزة (ready voices) مو يولّد أصوات من الصفر**
-- **مصادر الأصوات:**
+##### 5.3.1 Voice Cloning from Real Recordings
+- **المبدأ:** يوسف يوفّر تسجيلات صوتية حقيقية (أشخاص حقيقيين) → النظام يسوي AI voice clone → يستخدم الـ clone لإنتاج كل الفيديوهات
+- **هذا أفضل بكثير من أصوات AI من الصفر — الصوت المستنسخ يحافظ على طبيعية الصوت البشري**
+
+- **ما يحتاج يوسف يوفّره لكل صوت:**
   ```
-  Source 1: ElevenLabs Voice Library (مجاني — آلاف الأصوات الجاهزة)
-     → تنزيل عينات عربية عالية الجودة
-     → تستخدم كـ reference audio لـ Fish Speech
-  
-  Source 2: تسجيلات مذيعين/رواة محترفين (royalty-free)
-     → مواقع مثل: Voices.com, Fiverr (شراء عينة 5 دقائق)
-     → أو: تسجيل ذاتي لعينات بأصوات مختلفة
-  
-  Source 3: Creative Commons Arabic audiobooks/podcasts
-     → استخراج عينات نظيفة كـ reference
-  
-  Source 4: AI voice marketplaces
-     → CoquiTTS, XTTS voice packs
+  المطلوب: تسجيل صوتي نظيف WAV/MP3
+  ├── المدة: 1-5 دقائق (كل ما أطول = clone أدق)
+  │   ├── 30 ثانية = clone أساسي (مقبول)
+  │   ├── 1-2 دقيقة = clone جيد (موصى به)
+  │   └── 3-5 دقائق = clone ممتاز (أفضل نتيجة)
+  ├── المحتوى: قراءة نص عربي فصيح بأسلوب طبيعي
+  │   ├── يتضمن: جمل طويلة + قصيرة + أسئلة + تعجب
+  │   └── يتضمن: نبرات مختلفة (هادئ + حماسي + درامي)
+  ├── الجودة: بيئة هادئة، بدون صدى أو ضوضاء خلفية
+  │   ├── مايكروفون: أي مايك USB مقبول (لا يحتاج استوديو)
+  │   └── Format: WAV 44.1kHz 16-bit (أو MP3 320kbps)
+  └── الملف يوضع في: config/voices/[voice_name].wav
   ```
 
-- **Voice Library المحلية:**
+- **أفضل نموذج Voice Cloning للعربية:**
+  ```
+  الترتيب حسب جودة العربية:
+  
+  🥇 1. Fish Speech 1.5 (محلي — مجاني)
+     ├── أقوى نموذج مفتوح للعربية حالياً
+     ├── يدعم zero-shot cloning (عينة واحدة تكفي)
+     ├── VRAM: ~4GB
+     ├── جودة العربية: 8.5/10
+     └── يدعم emotion control (Feature 30)
+  
+  🥈 2. OpenAudio S1 (محلي — مجاني)
+     ├── من Sesame/Fish Speech team
+     ├── أحدث، جودة صوتية أعلى
+     ├── VRAM: ~4GB
+     ├── جودة العربية: 8/10 (أحدث بس أقل اختبار)
+     └── يدعم multi-speaker
+  
+  🥉 3. XTTS v2 / Coqui TTS (محلي — مجاني)
+     ├── مجرّب ومستقر
+     ├── يدعم العربية رسمياً
+     ├── VRAM: ~2GB
+     ├── جودة العربية: 7.5/10
+     └── أبطأ من Fish Speech
+  
+  ☁️ 4. ElevenLabs (API — مدفوع $22/شهر)
+     ├── أفضل جودة cloning بالعالم
+     ├── جودة العربية: 9/10
+     ├── لكن: مو محلي + يكلف
+     └── يستخدم كـ FALLBACK فقط
+  ```
+
+- **Clone Pipeline (مرة واحدة لكل صوت):**
+  ```python
+  def clone_voice(reference_wav: str, voice_id: str):
+      """
+      يستنسخ الصوت من التسجيل الحقيقي.
+      يشتغل مرة واحدة — بعدها يستخدم الـ clone لكل الفيديوهات.
+      """
+      # 1. تنظيف الصوت (إزالة ضوضاء + تطبيع الصوت)
+      cleaned = denoise_audio(reference_wav)       # using noisereduce library
+      normalized = normalize_volume(cleaned)        # consistent volume
+      
+      # 2. استنساخ الصوت
+      model = load_fish_speech()
+      voice_embedding = model.create_speaker_embedding(normalized)
+      
+      # 3. اختبار الجودة — يولّد جملة اختبارية ويقيّمها
+      test_text = "في عام ألفين وستة وعشرين، شهد العالم تحولات جذرية لم يتوقعها أحد."
+      test_audio = model.synthesize(test_text, voice_embedding)
+      
+      quality_score = evaluate_arabic_pronunciation(test_audio)
+      similarity_score = compare_voice_similarity(test_audio, normalized)
+      
+      if quality_score < 6 or similarity_score < 0.7:
+          raise VoiceCloneError(f"Clone quality too low: {quality_score}/10, similarity: {similarity_score}")
+      
+      # 4. حفظ الـ embedding للاستخدام المستقبلي
+      save_voice_profile(voice_id, voice_embedding, {
+          "reference_file": reference_wav,
+          "quality_score": quality_score,
+          "similarity_score": similarity_score,
+          "cloned_at": datetime.now(),
+          "model": "fish_speech_1.5"
+      })
+      
+      return voice_embedding
+  ```
+
+- **Voice Library (بعد الاستنساخ):**
   ```yaml
   voice_library:
-    # ─── أصوات رجالية ───────────────────
+    # ─── أصوات رجالية (مستنسخة من تسجيلات حقيقية) ───
     male_authoritative:
       id: "v_male_auth_01"
       name: "صوت المذيع الرسمي"
-      reference_file: "config/voices/male_authoritative_01.wav"
-      reference_duration_sec: 30
+      source: "real_human_recording"              # تسجيل شخص حقيقي
+      reference_file: "config/voices/male_authoritative_01.wav"  # الأصل
+      clone_embedding: "config/voices/embeddings/v_male_auth_01.pt"  # الـ clone
+      clone_model: "fish_speech_1.5"
+      reference_duration_sec: 120                 # دقيقتين تسجيل أصلي
+      clone_quality_score: 8.9
+      clone_similarity_score: 0.92
       characteristics:
         gender: "male"
         age_range: "35-50"
         tone: "authoritative, deep, calm"
         accent: "MSA (فصحى)"
         speed: "medium"
-        emotion_range: "wide"  # يقدر يتنوع بين هادئ ودرامي
+        emotion_range: "wide"
       best_for: ["documentary", "politics", "history"]
-      quality_score: 9.2  # من تقييم أولي
       
     male_energetic:
       id: "v_male_energy_01"
       name: "صوت الرياضة الحماسي"
+      source: "real_human_recording"
       reference_file: "config/voices/male_energetic_01.wav"
+      clone_embedding: "config/voices/embeddings/v_male_energy_01.pt"
+      clone_model: "fish_speech_1.5"
+      reference_duration_sec: 90
+      clone_quality_score: 8.5
+      clone_similarity_score: 0.88
       characteristics:
         gender: "male"
         age_range: "25-35"
         tone: "energetic, fast, passionate"
-        accent: "MSA with slight colloquial energy"
+        accent: "MSA with slight energy"
         speed: "fast"
         emotion_range: "medium"
       best_for: ["sports", "entertainment", "countdown"]
-      quality_score: 8.8
       
     male_mysterious:
       id: "v_male_mystery_01"
       name: "صوت الألغاز والتحقيقات"
+      source: "real_human_recording"
       reference_file: "config/voices/male_mysterious_01.wav"
+      clone_embedding: "config/voices/embeddings/v_male_mystery_01.pt"
+      clone_model: "fish_speech_1.5"
+      reference_duration_sec: 60
+      clone_quality_score: 8.3
+      clone_similarity_score: 0.85
       characteristics:
         gender: "male"
         age_range: "30-45"
@@ -576,12 +661,17 @@ Generate all media assets — images, video clips, voice, music, SFX — and com
         speed: "slow-medium"
         emotion_range: "wide"
       best_for: ["mysteries", "investigation", "conspiracy"]
-      quality_score: 8.5
 
     male_narrator:
       id: "v_male_narr_01"
       name: "صوت الراوي الكلاسيكي"
+      source: "real_human_recording"
       reference_file: "config/voices/male_narrator_01.wav"
+      clone_embedding: "config/voices/embeddings/v_male_narr_01.pt"
+      clone_model: "fish_speech_1.5"
+      reference_duration_sec: 180
+      clone_quality_score: 9.1
+      clone_similarity_score: 0.93
       characteristics:
         gender: "male"
         age_range: "40-55"
@@ -590,13 +680,17 @@ Generate all media assets — images, video clips, voice, music, SFX — and com
         speed: "medium-slow"
         emotion_range: "wide"
       best_for: ["storytelling", "history", "biography"]
-      quality_score: 9.0
 
-    # ─── أصوات نسائية ───────────────────
     female_educational:
       id: "v_female_edu_01"
       name: "صوت العلوم والتعليم"
+      source: "real_human_recording"
       reference_file: "config/voices/female_educational_01.wav"
+      clone_embedding: "config/voices/embeddings/v_female_edu_01.pt"
+      clone_model: "fish_speech_1.5"
+      reference_duration_sec: 90
+      clone_quality_score: 8.6
+      clone_similarity_score: 0.87
       characteristics:
         gender: "female"
         age_range: "28-40"
@@ -605,12 +699,17 @@ Generate all media assets — images, video clips, voice, music, SFX — and com
         speed: "medium"
         emotion_range: "medium"
       best_for: ["science", "technology", "explainer"]
-      quality_score: 8.7
 
     female_dramatic:
       id: "v_female_drama_01"
       name: "صوت الدراما والقصص"
+      source: "real_human_recording"
       reference_file: "config/voices/female_dramatic_01.wav"
+      clone_embedding: "config/voices/embeddings/v_female_drama_01.pt"
+      clone_model: "fish_speech_1.5"
+      reference_duration_sec: 120
+      clone_quality_score: 8.4
+      clone_similarity_score: 0.86
       characteristics:
         gender: "female"
         age_range: "30-45"
@@ -619,13 +718,17 @@ Generate all media assets — images, video clips, voice, music, SFX — and com
         speed: "medium"
         emotion_range: "wide"
       best_for: ["human_interest", "social_issues", "storytelling"]
-      quality_score: 8.6
 
-    # ─── أصوات خاصة ───────────────────
     young_male:
       id: "v_young_male_01"
       name: "صوت الشباب"
+      source: "real_human_recording"
       reference_file: "config/voices/young_male_01.wav"
+      clone_embedding: "config/voices/embeddings/v_young_male_01.pt"
+      clone_model: "fish_speech_1.5"
+      reference_duration_sec: 60
+      clone_quality_score: 8.1
+      clone_similarity_score: 0.84
       characteristics:
         gender: "male"
         age_range: "20-28"
@@ -634,7 +737,6 @@ Generate all media assets — images, video clips, voice, music, SFX — and com
         speed: "medium-fast"
         emotion_range: "medium"
       best_for: ["entertainment", "technology", "culture"]
-      quality_score: 8.3
   ```
 
 ##### 5.3.2 Smart Voice Selection Agent
@@ -2865,7 +2967,7 @@ channels:
 | **Vision LLM (Phase 6)** | LLaVA / Llama 3.2 Vision (local) or API |
 | **Image Gen** | ComfyUI + FLUX.1-dev |
 | **Video Gen** | ComfyUI + LTX-2.3 |
-| **TTS** | Fish Speech / OpenAudio S1 |
+| **Voice Cloning + TTS** | Fish Speech 1.5 (best Arabic), fallback: OpenAudio S1 / XTTS v2 / ElevenLabs API |
 | **Music** | MusicGen (via audiocraft library) |
 | **SFX** | AudioGen (via audiocraft library) |
 | **Video Compose** | FFmpeg + MoviePy |
@@ -2884,7 +2986,7 @@ channels:
 | Llama 3.2 Vision 11B | ~7GB | Visual QA (Phase 6) |
 | FLUX.1-dev | ~12GB | Image generation |
 | LTX-2.3 | ~8GB | Video generation (image-to-video with realistic motion) |
-| Fish Speech / OpenAudio S1 | ~2GB | Arabic TTS |
+| Fish Speech 1.5 | ~2GB | Arabic voice cloning + TTS (best open-source Arabic clone quality) |
 | MusicGen-large | ~3.3GB | Music generation |
 | AudioGen-medium | ~1.5GB | SFX generation |
 | Real-ESRGAN | ~0.1GB | 4K image/video upscaling (CPU) |
@@ -2909,15 +3011,19 @@ ai-video-factory/
 ├── config/
 │   ├── channels.yaml           # Channel definitions
 │   ├── youtube_policies.md     # YouTube ToS summary for compliance agent
-│   ├── voices/                 # Pre-built voice library (ready voices)
-│   │   ├── male_authoritative_01.wav    # مذيع رسمي — documentary/politics
-│   │   ├── male_energetic_01.wav        # حماسي — sports/entertainment
-│   │   ├── male_mysterious_01.wav       # غامض — mysteries/investigation
-│   │   ├── male_narrator_01.wav         # راوي كلاسيكي — storytelling/history
-│   │   ├── female_educational_01.wav    # تعليمي — science/explainer
-│   │   ├── female_dramatic_01.wav       # درامي — human interest/social
-│   │   ├── young_male_01.wav            # شبابي — tech/culture
-│   │   └── voice_library.yaml           # Voice metadata + characteristics
+│   ├── voices/                 # Voice cloning library
+│   │   ├── male_authoritative_01.wav    # تسجيل حقيقي — مذيع رسمي
+│   │   ├── male_energetic_01.wav        # تسجيل حقيقي — حماسي
+│   │   ├── male_mysterious_01.wav       # تسجيل حقيقي — غامض
+│   │   ├── male_narrator_01.wav         # تسجيل حقيقي — راوي
+│   │   ├── female_educational_01.wav    # تسجيل حقيقي — تعليمي
+│   │   ├── female_dramatic_01.wav       # تسجيل حقيقي — درامي
+│   │   ├── young_male_01.wav            # تسجيل حقيقي — شبابي
+│   │   ├── embeddings/                  # AI voice clone embeddings
+│   │   │   ├── v_male_auth_01.pt
+│   │   │   ├── v_male_energy_01.pt
+│   │   │   └── ...
+│   │   └── voice_library.yaml           # Voice metadata + clone scores
 │   └── templates/              # Intro/outro video templates
 │       ├── documentary_intro.mp4
 │       └── documentary_outro.mp4
