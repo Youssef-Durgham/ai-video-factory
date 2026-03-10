@@ -8,29 +8,46 @@
 ## 1. System Overview
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                        AI VIDEO FACTORY                             │
-│                                                                     │
-│  Python 3.11+ Orchestrator                                         │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐          │
-│  │ Phase 1  │→│ Phase 2  │→│ Phase 3  │→│ Phase 4  │          │
-│  │ Research │  │ SEO      │  │ Script   │  │ QA       │          │
-│  └──────────┘  └──────────┘  └──────────┘  └────┬─────┘          │
-│                                                   │ PASS           │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌────▼─────┐          │
-│  │ Phase 8  │←│ Phase 7  │←│ Phase 6  │←│ Phase 5  │          │
-│  │ Publish  │  │ Final QA │  │ Visual QA│  │Production│          │
-│  └────┬─────┘  └──────────┘  └──────────┘  └──────────┘          │
-│       │                                                            │
-│  ┌────▼─────┐                                                      │
-│  │ Phase 9  │ ← Performance Intelligence (continuous loop)         │
-│  └──────────┘                                                      │
-│                                                                     │
-│  ┌─────────────────────────────────────────────────────────────┐   │
-│  │ INFRASTRUCTURE                                               │   │
-│  │ SQLite DB │ GPU Manager │ GPU Logger │ Telegram Bot │ Cron  │   │
-│  └─────────────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────┐
+│                          AI VIDEO FACTORY                                │
+│                                                                          │
+│  ┌────────────────────────────────────────────────────────────────────┐  │
+│  │  ORCHESTRATION LAYER                                               │  │
+│  │  PipelineRunner │ JobStateManager │ GateEvaluator │ EventBus      │  │
+│  └────────────────────────────┬───────────────────────────────────────┘  │
+│                               │ events                                   │
+│  ┌────────────────────────────▼───────────────────────────────────────┐  │
+│  │  PHASE EXECUTION LAYER (PhaseExecutor)                             │  │
+│  │                                                                    │  │
+│  │  Phase 1    Phase 2    Phase 3    Phase 4 ✅                       │  │
+│  │  Research → SEO      → Script   → Compliance                      │  │
+│  │                                       │ PASS                       │  │
+│  │  Phase 8    Phase 7 ✅  Phase 6 ✅     Phase 5 (sub-pipeline)      │  │
+│  │  Publish ← Final QA ← Visual QA ← ┌──────────────────────┐      │  │
+│  │     │                               │ AssetCoordinator     │      │  │
+│  │     │       Phase 7.5 ✅             │  ├─ ImageGen         │      │  │
+│  │     │       Manual Review            │  ├─ VideoGen         │      │  │
+│  │     ▼                               │  ├─ AudioCoordinator │      │  │
+│  │  Phase 9 ← (cron)                  │  │   ├─ VoiceGen     │      │  │
+│  │  Intelligence                       │  │   ├─ MusicGen     │      │  │
+│  │                                     │  │   └─ SFXGen       │      │  │
+│  │                                     │  └─ VideoComposer    │      │  │
+│  │                                     └──────────────────────┘      │  │
+│  └────────────────────────────────────────────────────────────────────┘  │
+│                                                                          │
+│  ┌────────────────────────────────────────────────────────────────────┐  │
+│  │  INFRASTRUCTURE LAYER                                              │  │
+│  │  ResourceCoordinator (GPU) │ FactoryDB │ EventStore │ TelegramBot │  │
+│  └────────────────────────────────────────────────────────────────────┘  │
+│                                                                          │
+│  ┌────────────────────────────────────────────────────────────────────┐  │
+│  │  AGENTS LAYER                                                      │  │
+│  │  core_agents/          │ optimization_agents/  │ experimental/     │  │
+│  │  (anti_repetition,     │ (watch_optimizer,     │ (sponsorship,     │  │
+│  │   content_calendar,    │  revenue_optimizer,   │  cross_promo,     │  │
+│  │   community)           │  algo_tracker)        │  dubbing)         │  │
+│  └────────────────────────────────────────────────────────────────────┘  │
+└──────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### Hardware Target
@@ -114,9 +131,16 @@ ai-video-factory/
 │   │   ├── __init__.py
 │   │   ├── config.py               # Config loader (see §3)
 │   │   ├── database.py             # FactoryDB class (see §5)
-│   │   ├── gpu_manager.py          # GPU memory manager (see §6)
+│   │   ├── pipeline_runner.py      # Thin coordinator (see §4.6)
+│   │   ├── phase_executor.py       # Phase → handler mapping (see §4.7)
+│   │   ├── job_state_machine.py    # Formal FSM + transitions (see §4.2)
+│   │   ├── gate_evaluator.py       # QA gate evaluation (see §4.3)
+│   │   ├── resource_coordinator.py # GPU lifecycle orchestration (see §4.4)
+│   │   ├── event_bus.py            # In-process pub/sub events (see §4.5)
+│   │   ├── event_store.py          # Persistent event log (see §4.5)
+│   │   ├── gpu_manager.py          # Low-level GPU memory (see §6)
 │   │   ├── gpu_logger.py           # GPU precision logging (see §6)
-│   │   ├── scheduler.py            # Job scheduler
+│   │   ├── scheduler.py            # Job scheduler (APScheduler)
 │   │   ├── telegram_bot.py         # Telegram notifications + interactive
 │   │   └── retry.py                # Retry/backoff logic
 │   │
@@ -150,7 +174,10 @@ ai-video-factory/
 │   │   └── arabic_quality.py       # MSA grammar + pronunciation
 │   │
 │   ├── phase5_production/
-│   │   ├── __init__.py
+│   │   ├── __init__.py             # Exports: AssetCoordinator, AudioCoordinator, VideoComposer
+│   │   ├── asset_coordinator.py    # Visual sub-pipeline: images + video
+│   │   ├── audio_coordinator.py    # Audio sub-pipeline: voice + music + SFX
+│   │   ├── video_composer.py       # FFmpeg assembly sub-pipeline
 │   │   ├── image_gen.py            # FLUX image generation
 │   │   ├── image_prompt.py         # Arabic content prompt enhancement
 │   │   ├── video_gen.py            # LTX-2.3 video generation
@@ -160,8 +187,7 @@ ai-video-factory/
 │   │   ├── music_gen.py            # MusicGen background music
 │   │   ├── sfx_gen.py              # AudioGen sound effects
 │   │   ├── content_id_guard.py     # Audio fingerprint protection
-│   │   ├── upscaler.py             # Real-ESRGAN 4K upscale
-│   │   └── composer.py             # FFmpeg video assembly
+│   │   └── upscaler.py             # Real-ESRGAN 4K upscale
 │   │
 │   ├── phase6_visual_qa/
 │   │   ├── __init__.py
@@ -198,34 +224,43 @@ ai-video-factory/
 │   │   ├── cross_video.py          # Cross-video pattern mining
 │   │   └── reporter.py             # Weekly/monthly reports
 │   │
-│   ├── agents/                     # Advanced feature agents
+│   ├── agents/
 │   │   ├── __init__.py
-│   │   ├── content_calendar.py
-│   │   ├── watch_optimizer.py
-│   │   ├── community.py
-│   │   ├── trending_hijack.py
-│   │   ├── playlist_agent.py
-│   │   ├── dubbing_agent.py
-│   │   ├── anti_repetition.py
-│   │   ├── emotional_arc.py
-│   │   ├── voice_emotion.py
-│   │   ├── sound_design.py
-│   │   ├── presenter.py
-│   │   ├── narrative_styles.py
-│   │   ├── micro_test.py
-│   │   ├── dynamic_length.py
-│   │   ├── brand_kit.py
-│   │   ├── algo_tracker.py
-│   │   ├── ad_placement.py
-│   │   ├── sponsorship.py
-│   │   ├── repurpose.py
-│   │   ├── audience_intel.py
-│   │   ├── cross_promo.py
-│   │   ├── template_evolver.py
-│   │   ├── revenue_optimizer.py
-│   │   ├── disaster_recovery.py
-│   │   ├── competitor_alert.py
-│   │   └── ab_testing.py
+│   │   │
+│   │   ├── core_agents/            # 🔴 Production-critical (Sprint 6-7)
+│   │   │   ├── __init__.py
+│   │   │   ├── anti_repetition.py  # Prevents pattern fatigue
+│   │   │   ├── content_calendar.py # Weekly planning
+│   │   │   ├── community.py       # Comment engagement
+│   │   │   ├── emotional_arc.py   # Script emotion mapping
+│   │   │   ├── narrative_styles.py # Style library + selection
+│   │   │   ├── dynamic_length.py  # Optimal video length
+│   │   │   ├── brand_kit.py       # Visual identity enforcement
+│   │   │   ├── voice_emotion.py   # Per-scene TTS emotion
+│   │   │   └── sound_design.py    # Cinematic audio layering
+│   │   │
+│   │   ├── optimization_agents/    # 🟡 Improves performance (Sprint 8-10)
+│   │   │   ├── __init__.py
+│   │   │   ├── watch_optimizer.py  # Retention analysis → feedback
+│   │   │   ├── revenue_optimizer.py# RPM tracking + adjustments
+│   │   │   ├── algo_tracker.py    # YouTube algorithm monitoring
+│   │   │   ├── ad_placement.py    # Smart mid-roll positions
+│   │   │   ├── template_evolver.py # Script template learning
+│   │   │   ├── playlist_agent.py  # Series clustering
+│   │   │   ├── competitor_alert.py # Real-time monitoring
+│   │   │   ├── trending_hijack.py # Breaking news fast-track
+│   │   │   └── micro_test.py      # Hook testing before publish
+│   │   │
+│   │   └── experimental_agents/    # 🟢 Future/nice-to-have (Sprint 11-12)
+│   │       ├── __init__.py
+│   │       ├── dubbing_agent.py   # Multi-language dubbing
+│   │       ├── cross_promo.py     # Cross-channel promotion
+│   │       ├── sponsorship.py     # Sponsor integration
+│   │       ├── repurpose.py       # Multi-platform repurposing
+│   │       ├── audience_intel.py  # Audience profiling
+│   │       ├── presenter.py       # AI virtual presenter
+│   │       ├── disaster_recovery.py # Backup + strike protocol
+│   │       └── ab_testing.py      # A/B script testing
 │   │
 │   └── models/                     # Data models (Pydantic)
 │       ├── __init__.py
@@ -530,265 +565,895 @@ def _resolve_env_vars(obj):
 
 ---
 
-## 4. Main Orchestrator (`src/main.py`)
+## 4. Orchestration Layer (Decomposed — NOT God Object)
+
+> **Problem:** A single `Pipeline` class handling sequencing, GPU, state, gates, notifications, and resume
+> is a God Orchestrator. Hard to test, maintain, and extend.
+>
+> **Solution:** Decompose into 5 focused components + an event system.
+
+### 4.1 Component Decomposition
+
+```
+src/core/
+├── pipeline_runner.py       # High-level: "run this job"
+├── phase_executor.py        # Executes a single phase
+├── gate_evaluator.py        # Evaluates QA gates (pass/fail/block)
+├── job_state_machine.py     # Formal state machine for job status
+├── resource_coordinator.py  # GPU model loading/unloading orchestration
+├── event_bus.py             # Internal event system
+└── event_store.py           # Persistent event log (SQLite table)
+```
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                     PipelineRunner                           │
+│  "Run job X" — thin coordinator, delegates everything        │
+│                                                             │
+│  Uses:                                                      │
+│  ├── JobStateMachine    → "what's the next valid state?"    │
+│  ├── PhaseExecutor      → "execute phase Y for job X"      │
+│  ├── GateEvaluator      → "did the gate pass?"             │
+│  ├── ResourceCoordinator → "load/unload GPU model"          │
+│  └── EventBus           → "emit PHASE_COMPLETED event"     │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### 4.2 Job State Machine (`src/core/job_state_machine.py`)
+
+**Formal finite state machine — prevents invalid transitions.**
 
 ```python
 """
-Main Pipeline Orchestrator.
-Runs jobs through all 9 phases sequentially.
-Handles GPU model swapping, checkpointing, and error recovery.
+Formal state machine for job lifecycle.
+Every status transition must be explicitly defined here.
+Invalid transitions raise StateError — prevents bugs.
+"""
+
+from enum import Enum
+from typing import Optional
+
+
+class JobStatus(str, Enum):
+    PENDING       = "pending"
+    RESEARCH      = "research"
+    SEO           = "seo"
+    SCRIPT        = "script"
+    COMPLIANCE    = "compliance"
+    
+    # Phase 5 sub-states (asset generation)
+    IMAGES        = "images"
+    VISUAL_QA     = "visual_qa"
+    IMAGE_REGEN   = "image_regen"      # Regenerating failed images
+    VIDEO         = "video"
+    VOICE         = "voice"
+    MUSIC         = "music"
+    SFX           = "sfx"
+    COMPOSE       = "compose"
+    
+    FINAL_QA      = "final_qa"
+    MANUAL_REVIEW = "manual_review"
+    PUBLISH       = "publish"
+    PUBLISHED     = "published"
+    
+    # Terminal / special states
+    BLOCKED       = "blocked"
+    CANCELLED     = "cancelled"
+    
+    # Phase 9 tracking states
+    TRACKING_24H  = "tracking_24h"
+    TRACKING_7D   = "tracking_7d"
+    TRACKING_30D  = "tracking_30d"
+    COMPLETE      = "complete"
+
+
+# ═══ TRANSITION MAP ═══
+# Only these transitions are allowed. Anything else = bug.
+TRANSITIONS: dict[JobStatus, list[JobStatus]] = {
+    JobStatus.PENDING:       [JobStatus.RESEARCH],
+    JobStatus.RESEARCH:      [JobStatus.SEO, JobStatus.BLOCKED],
+    JobStatus.SEO:           [JobStatus.SCRIPT, JobStatus.BLOCKED],
+    JobStatus.SCRIPT:        [JobStatus.COMPLIANCE, JobStatus.BLOCKED],
+    JobStatus.COMPLIANCE:    [JobStatus.IMAGES, JobStatus.BLOCKED],
+    
+    # Phase 5 sub-pipeline
+    JobStatus.IMAGES:        [JobStatus.VISUAL_QA, JobStatus.BLOCKED],
+    JobStatus.VISUAL_QA:     [JobStatus.VIDEO, JobStatus.IMAGE_REGEN, JobStatus.BLOCKED],
+    JobStatus.IMAGE_REGEN:   [JobStatus.VISUAL_QA],  # Goes back to QA after regen
+    JobStatus.VIDEO:         [JobStatus.VOICE, JobStatus.BLOCKED],
+    JobStatus.VOICE:         [JobStatus.MUSIC, JobStatus.BLOCKED],
+    JobStatus.MUSIC:         [JobStatus.SFX, JobStatus.BLOCKED],
+    JobStatus.SFX:           [JobStatus.COMPOSE, JobStatus.BLOCKED],
+    JobStatus.COMPOSE:       [JobStatus.FINAL_QA, JobStatus.BLOCKED],
+    
+    JobStatus.FINAL_QA:      [JobStatus.MANUAL_REVIEW, JobStatus.PUBLISH, JobStatus.BLOCKED],
+    JobStatus.MANUAL_REVIEW: [JobStatus.PUBLISH, JobStatus.BLOCKED, JobStatus.CANCELLED],
+    JobStatus.PUBLISH:       [JobStatus.PUBLISHED, JobStatus.BLOCKED],
+    JobStatus.PUBLISHED:     [JobStatus.TRACKING_24H],
+    
+    # Phase 9 tracking
+    JobStatus.TRACKING_24H:  [JobStatus.TRACKING_7D],
+    JobStatus.TRACKING_7D:   [JobStatus.TRACKING_30D],
+    JobStatus.TRACKING_30D:  [JobStatus.COMPLETE],
+    
+    # Blocked can be unblocked → resume from blocked_phase
+    JobStatus.BLOCKED:       [
+        JobStatus.RESEARCH, JobStatus.SEO, JobStatus.SCRIPT, 
+        JobStatus.COMPLIANCE, JobStatus.IMAGES, JobStatus.VISUAL_QA,
+        JobStatus.VIDEO, JobStatus.VOICE, JobStatus.MUSIC,
+        JobStatus.COMPOSE, JobStatus.FINAL_QA, JobStatus.PUBLISH,
+        JobStatus.CANCELLED
+    ],
+    
+    # Terminal states — no transitions out
+    JobStatus.CANCELLED:     [],
+    JobStatus.COMPLETE:      [],
+}
+
+# Which states require which GPU model
+GPU_REQUIREMENTS: dict[JobStatus, Optional[str]] = {
+    JobStatus.RESEARCH:     "qwen2.5:72b",
+    JobStatus.SEO:          "qwen2.5:72b",
+    JobStatus.SCRIPT:       "qwen2.5:72b",
+    JobStatus.COMPLIANCE:   "qwen2.5:72b",
+    JobStatus.IMAGES:       "flux",
+    JobStatus.VISUAL_QA:    "llama3.2-vision:11b",
+    JobStatus.IMAGE_REGEN:  "flux",
+    JobStatus.VIDEO:        "ltx",
+    JobStatus.VOICE:        "fish_speech",
+    JobStatus.MUSIC:        "musicgen",
+    JobStatus.SFX:          "audiogen",
+    JobStatus.COMPOSE:      None,             # CPU only
+    JobStatus.FINAL_QA:     "qwen2.5:72b",
+    JobStatus.MANUAL_REVIEW: None,            # Waiting for human
+    JobStatus.PUBLISH:      "flux",           # Thumbnails
+}
+
+# Consecutive states that use the SAME model (batch without unload)
+GPU_BATCHES = [
+    [JobStatus.RESEARCH, JobStatus.SEO, JobStatus.SCRIPT, JobStatus.COMPLIANCE],  # All Qwen
+]
+
+
+class StateError(Exception):
+    """Raised when an invalid state transition is attempted."""
+    pass
+
+
+class JobStateMachine:
+    """
+    Enforces valid state transitions.
+    Every status change in the system MUST go through this class.
+    """
+    
+    def __init__(self, db):
+        self.db = db
+    
+    def transition(self, job_id: str, to_status: JobStatus) -> None:
+        """
+        Transition job to new status.
+        Raises StateError if transition is invalid.
+        """
+        job = self.db.get_job(job_id)
+        current = JobStatus(job["status"])
+        
+        if to_status not in TRANSITIONS.get(current, []):
+            raise StateError(
+                f"Invalid transition: {current.value} → {to_status.value}. "
+                f"Allowed: {[s.value for s in TRANSITIONS.get(current, [])]}"
+            )
+        
+        self.db.update_job_status(job_id, to_status.value)
+        return current  # Return previous status for logging
+    
+    def get_next_status(self, current: JobStatus) -> Optional[JobStatus]:
+        """Get the default next status (first in transition list)."""
+        options = TRANSITIONS.get(current, [])
+        if options and options[0] != JobStatus.BLOCKED:
+            return options[0]
+        return None
+    
+    def get_required_gpu(self, status: JobStatus) -> Optional[str]:
+        """What GPU model does this status need?"""
+        return GPU_REQUIREMENTS.get(status)
+    
+    def can_batch_with_next(self, current: JobStatus, next_status: JobStatus) -> bool:
+        """Can we keep the same GPU model loaded for the next status?"""
+        for batch in GPU_BATCHES:
+            if current in batch and next_status in batch:
+                return True
+        return False
+    
+    def get_resume_status(self, job_id: str) -> JobStatus:
+        """After crash, where should this job resume?"""
+        job = self.db.get_job(job_id)
+        status = JobStatus(job["status"])
+        
+        # If blocked, resume from the phase that blocked it
+        if status == JobStatus.BLOCKED:
+            blocked_phase = job.get("blocked_phase")
+            if blocked_phase:
+                return JobStatus(blocked_phase)
+        
+        return status
+```
+
+### 4.3 Gate Evaluator (`src/core/gate_evaluator.py`)
+
+```python
+"""
+Evaluates QA gate results.
+Decides: PASS (continue) | RETRY (regenerate) | BLOCK (alert human)
+Separated from phase logic for testability.
+"""
+
+from dataclasses import dataclass
+from typing import Optional
+
+
+@dataclass
+class GateResult:
+    passed: bool
+    action: str            # "continue" | "retry" | "block" | "manual_review"
+    reason: str = ""
+    retry_phase: Optional[str] = None   # Which phase to re-run
+    failed_items: list = None           # e.g., failed scene indices
+    score: float = 0.0
+
+
+class GateEvaluator:
+    """Evaluates results from QA phases and decides next action."""
+    
+    def evaluate_compliance(self, check_results: list[dict]) -> GateResult:
+        """Phase 4: Script compliance gate."""
+        blocked = [r for r in check_results if r["status"] == "block"]
+        warnings = [r for r in check_results if r["status"] == "warn"]
+        
+        if blocked:
+            return GateResult(
+                passed=False, action="block",
+                reason=f"Compliance violation: {blocked[0]['details']}"
+            )
+        
+        if len(warnings) > 2:
+            return GateResult(
+                passed=False, action="block",
+                reason=f"Too many warnings ({len(warnings)}): {warnings[0]['details']}"
+            )
+        
+        avg_score = sum(r["score"] for r in check_results) / len(check_results)
+        return GateResult(passed=True, action="continue", score=avg_score)
+    
+    def evaluate_visual_qa(self, image_scores: list[dict]) -> GateResult:
+        """Phase 6: Visual QA gate."""
+        failed = [s for s in image_scores if s["score"] < 7]
+        total = len(image_scores)
+        pass_rate = (total - len(failed)) / total
+        
+        if pass_rate >= 0.9:
+            return GateResult(passed=True, action="continue", score=pass_rate)
+        elif pass_rate >= 0.7:
+            return GateResult(
+                passed=False, action="retry",
+                retry_phase="image_regen",
+                failed_items=[s["scene_index"] for s in failed],
+                reason=f"{len(failed)}/{total} images below quality threshold"
+            )
+        else:
+            return GateResult(
+                passed=False, action="block",
+                reason=f"Image quality too low: {len(failed)}/{total} failed"
+            )
+    
+    def evaluate_final_qa(self, technical: dict, content: dict) -> GateResult:
+        """Phase 7: Final video QA gate."""
+        if technical.get("av_sync_drift_ms", 0) > 100:
+            return GateResult(
+                passed=False, action="retry", retry_phase="compose",
+                reason=f"A/V sync drift: {technical['av_sync_drift_ms']}ms"
+            )
+        
+        content_score = content.get("score", 0)
+        if content_score < 7:
+            return GateResult(
+                passed=False, action="block",
+                reason=f"Content coherence too low: {content_score}/10"
+            )
+        
+        return GateResult(passed=True, action="continue", score=content_score)
+    
+    def evaluate_manual_review_needed(self, job: dict, config: dict) -> bool:
+        """Phase 7.5: Should this job go to manual review?"""
+        review_config = config["settings"]["manual_review"]
+        
+        if not review_config["enabled"] or review_config["mode"] == "off":
+            return False
+        
+        if review_config["mode"] == "all":
+            return True
+        
+        # Selective mode
+        if job.get("topic_category") in review_config.get("sensitive_categories", []):
+            return True
+        
+        # Check QA scores
+        min_score = review_config.get("auto_publish_min_score", 8.0)
+        # ... check all QA scores against min_score
+        
+        return False
+```
+
+### 4.4 Resource Coordinator (`src/core/resource_coordinator.py`)
+
+```python
+"""
+Manages GPU model lifecycle.
+Wraps GPUMemoryManager with state-machine awareness.
+Knows which model each status needs and handles batching.
+"""
+
+from src.core.gpu_manager import GPUMemoryManager
+from src.core.gpu_logger import GPULogger
+from src.core.job_state_machine import JobStatus, GPU_REQUIREMENTS
+
+
+class ResourceCoordinator:
+    """
+    High-level GPU orchestration.
+    Knows: which model is loaded, which model the next phase needs,
+    whether to batch or swap.
+    """
+    
+    def __init__(self, gpu_manager: GPUMemoryManager):
+        self.gpu = gpu_manager
+        self.current_model = None
+        self.logger = None
+    
+    def set_logger(self, logger: GPULogger):
+        self.logger = logger
+    
+    def prepare_for_status(self, status: JobStatus):
+        """
+        Ensure the correct GPU model is loaded for this status.
+        Handles: no-op (already loaded), swap, or skip (CPU-only).
+        """
+        required = GPU_REQUIREMENTS.get(status)
+        
+        if required is None:
+            # CPU-only phase — unload GPU if anything loaded
+            if self.current_model:
+                self.gpu.unload_model(logger=self.logger)
+                self.current_model = None
+            return
+        
+        if required == self.current_model:
+            # Already loaded — no swap needed (batching)
+            return
+        
+        # Need to swap
+        if self.current_model:
+            self.gpu.unload_model(logger=self.logger)
+        
+        model_type = self._get_model_type(required)
+        self.gpu.load_model(required, model_type=model_type, logger=self.logger)
+        self.current_model = required
+    
+    def release_all(self):
+        """Release GPU at end of pipeline or on error."""
+        if self.current_model:
+            self.gpu.unload_model(logger=self.logger)
+            self.current_model = None
+    
+    def emergency_release(self):
+        """Nuclear option — force free everything."""
+        self.gpu.emergency_cleanup(logger=self.logger)
+        self.current_model = None
+    
+    def _get_model_type(self, model_name: str) -> str:
+        if model_name in ("qwen2.5:72b", "llama3.2-vision:11b"):
+            return "ollama"
+        elif model_name in ("flux", "ltx"):
+            return "comfyui"
+        else:
+            return "python"
+```
+
+### 4.5 Event Bus + Event Store (`src/core/event_bus.py`, `src/core/event_store.py`)
+
+```python
+# ═══ src/core/event_bus.py ═══
+"""
+Internal event system.
+Decouples phases from side effects (notifications, logging, analytics).
+Not a message broker — just a simple in-process pub/sub.
+"""
+
+from enum import Enum
+from dataclasses import dataclass, field
+from datetime import datetime
+from typing import Callable, Any
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+class EventType(str, Enum):
+    # Job lifecycle
+    JOB_CREATED           = "job.created"
+    JOB_STATUS_CHANGED    = "job.status_changed"
+    JOB_BLOCKED           = "job.blocked"
+    JOB_UNBLOCKED         = "job.unblocked"
+    JOB_CANCELLED         = "job.cancelled"
+    JOB_PUBLISHED         = "job.published"
+    
+    # Phase events
+    PHASE_STARTED         = "phase.started"
+    PHASE_COMPLETED       = "phase.completed"
+    PHASE_FAILED          = "phase.failed"
+    
+    # Gate events
+    GATE_PASSED           = "gate.passed"
+    GATE_FAILED           = "gate.failed"
+    GATE_BLOCKED          = "gate.blocked"
+    
+    # Production events
+    IMAGE_GENERATED       = "production.image_generated"
+    IMAGE_REGENERATED     = "production.image_regenerated"
+    VIDEO_GENERATED       = "production.video_generated"
+    VOICE_GENERATED       = "production.voice_generated"
+    MUSIC_GENERATED       = "production.music_generated"
+    COMPOSE_COMPLETED     = "production.compose_completed"
+    
+    # GPU events
+    GPU_MODEL_LOADED      = "gpu.model_loaded"
+    GPU_MODEL_UNLOADED    = "gpu.model_unloaded"
+    GPU_OOM               = "gpu.oom"
+    GPU_VRAM_LEAK         = "gpu.vram_leak"
+    
+    # Human interaction
+    TOPIC_SELECTED        = "human.topic_selected"
+    MANUAL_REVIEW_REQUESTED = "human.review_requested"
+    MANUAL_REVIEW_APPROVED  = "human.review_approved"
+    MANUAL_REVIEW_REJECTED  = "human.review_rejected"
+    
+    # Intelligence
+    ANALYTICS_CAPTURED    = "intel.analytics_captured"
+    RULE_DISCOVERED       = "intel.rule_discovered"
+    REPORT_GENERATED      = "intel.report_generated"
+    
+    # Content ID
+    CONTENT_ID_SAFE       = "content_id.safe"
+    CONTENT_ID_CLAIMED    = "content_id.claimed"
+
+
+@dataclass
+class Event:
+    type: EventType
+    job_id: str = ""
+    data: dict = field(default_factory=dict)
+    timestamp: datetime = field(default_factory=datetime.now)
+
+
+class EventBus:
+    """
+    Simple in-process event bus.
+    Phases emit events → subscribers react.
+    
+    Example subscribers:
+    - TelegramBot listens to JOB_BLOCKED → sends alert
+    - GPULogger listens to GPU_OOM → logs critical
+    - EventStore listens to ALL → persists to DB
+    """
+    
+    def __init__(self):
+        self._subscribers: dict[EventType, list[Callable]] = {}
+        self._global_subscribers: list[Callable] = []
+    
+    def subscribe(self, event_type: EventType, handler: Callable):
+        """Subscribe to a specific event type."""
+        self._subscribers.setdefault(event_type, []).append(handler)
+    
+    def subscribe_all(self, handler: Callable):
+        """Subscribe to ALL events (for logging/persistence)."""
+        self._global_subscribers.append(handler)
+    
+    def emit(self, event: Event):
+        """Emit an event to all subscribers."""
+        logger.debug(f"Event: {event.type.value} | job={event.job_id} | {event.data}")
+        
+        # Global subscribers first (logging)
+        for handler in self._global_subscribers:
+            try:
+                handler(event)
+            except Exception as e:
+                logger.error(f"Event handler error: {e}")
+        
+        # Type-specific subscribers
+        for handler in self._subscribers.get(event.type, []):
+            try:
+                handler(event)
+            except Exception as e:
+                logger.error(f"Event handler error: {e}")
+
+
+# ═══ src/core/event_store.py ═══
+"""
+Persists all events to SQLite for audit trail and replay.
+"""
+
+class EventStore:
+    """
+    Persistent event log.
+    Every event emitted by EventBus is stored here.
+    Used for: audit trail, debugging, crash analysis, analytics.
+    """
+    
+    SCHEMA = """
+    CREATE TABLE IF NOT EXISTS events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        event_type TEXT NOT NULL,
+        job_id TEXT,
+        data JSON,
+        timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        
+        -- Indexes for common queries
+        CONSTRAINT idx_event_type CHECK(event_type IS NOT NULL)
+    );
+    CREATE INDEX IF NOT EXISTS idx_events_type ON events(event_type);
+    CREATE INDEX IF NOT EXISTS idx_events_job ON events(job_id);
+    CREATE INDEX IF NOT EXISTS idx_events_time ON events(timestamp);
+    """
+    
+    def __init__(self, db):
+        self.db = db
+        self.db.conn.executescript(self.SCHEMA)
+    
+    def store(self, event: Event):
+        """Store event — called as global subscriber on EventBus."""
+        self.db.conn.execute(
+            "INSERT INTO events (event_type, job_id, data, timestamp) VALUES (?, ?, ?, ?)",
+            (event.type.value, event.job_id, json.dumps(event.data), event.timestamp)
+        )
+        self.db.conn.commit()
+    
+    def get_job_events(self, job_id: str) -> list[dict]:
+        """Get all events for a job — for debugging/audit."""
+        rows = self.db.conn.execute(
+            "SELECT * FROM events WHERE job_id = ? ORDER BY timestamp", (job_id,)
+        ).fetchall()
+        return [dict(r) for r in rows]
+    
+    def get_recent(self, event_type: str = None, limit: int = 100) -> list[dict]:
+        query = "SELECT * FROM events"
+        params = []
+        if event_type:
+            query += " WHERE event_type = ?"
+            params.append(event_type)
+        query += " ORDER BY timestamp DESC LIMIT ?"
+        params.append(limit)
+        rows = self.db.conn.execute(query, params).fetchall()
+        return [dict(r) for r in rows]
+```
+
+### 4.6 Pipeline Runner (`src/core/pipeline_runner.py`) — Thin Coordinator
+
+```python
+"""
+PipelineRunner — the THIN orchestrator.
+Does NOT contain phase logic. Only coordinates the other components.
+
+Responsibilities:
+1. Get next status from StateMachine
+2. Ask ResourceCoordinator to prepare GPU
+3. Ask PhaseExecutor to run the phase
+4. Ask GateEvaluator to evaluate gates
+5. Emit events via EventBus
+6. Handle errors gracefully
 """
 
 import logging
-from datetime import datetime
 from src.core.config import load_config
 from src.core.database import FactoryDB
+from src.core.job_state_machine import JobStateMachine, JobStatus, StateError
+from src.core.gate_evaluator import GateEvaluator
+from src.core.resource_coordinator import ResourceCoordinator
 from src.core.gpu_manager import GPUMemoryManager
 from src.core.gpu_logger import GPULogger
+from src.core.event_bus import EventBus, Event, EventType
+from src.core.event_store import EventStore
 from src.core.telegram_bot import TelegramBot
+from src.core.phase_executor import PhaseExecutor
+
+logger = logging.getLogger(__name__)
+
+
+class PipelineRunner:
+    """
+    Thin coordinator. Runs a job through the pipeline
+    by delegating to specialized components.
+    
+    Compare to old monolithic Pipeline class:
+    - No phase logic here
+    - No GPU management here
+    - No gate evaluation here
+    - No state manipulation here
+    Just coordination.
+    """
+    
+    def __init__(self):
+        config = load_config()
+        db = FactoryDB(config["settings"]["database"]["path"])
+        gpu = GPUMemoryManager(config["settings"]["gpu"])
+        
+        self.config = config
+        self.db = db
+        self.state = JobStateMachine(db)
+        self.gates = GateEvaluator()
+        self.resources = ResourceCoordinator(gpu)
+        self.executor = PhaseExecutor(config, db)
+        self.events = EventBus()
+        self.telegram = TelegramBot(config["settings"]["telegram"])
+        
+        # Wire up event subscribers
+        event_store = EventStore(db)
+        self.events.subscribe_all(event_store.store)                         # Persist all
+        self.events.subscribe(EventType.JOB_BLOCKED, self._on_blocked)       # Alert
+        self.events.subscribe(EventType.GPU_OOM, self._on_gpu_oom)           # Emergency
+        self.events.subscribe(EventType.JOB_PUBLISHED, self._on_published)   # Notify
+        self.events.subscribe(EventType.MANUAL_REVIEW_REQUESTED, self._on_review)
+    
+    def run_job(self, job_id: str):
+        """Run a job through all phases until completion or pause."""
+        gpu_logger = GPULogger(job_id)
+        self.resources.set_logger(gpu_logger)
+        
+        try:
+            while True:
+                job = self.db.get_job(job_id)
+                current = JobStatus(job["status"])
+                
+                # Terminal states — done
+                if current in (JobStatus.PUBLISHED, JobStatus.CANCELLED, 
+                               JobStatus.COMPLETE, JobStatus.BLOCKED):
+                    break
+                
+                # Waiting for human — pause
+                if current == JobStatus.MANUAL_REVIEW:
+                    break
+                
+                # 1. Prepare GPU for this phase
+                self.resources.prepare_for_status(current)
+                
+                # 2. Execute the phase
+                self.events.emit(Event(EventType.PHASE_STARTED, job_id, {"phase": current.value}))
+                result = self.executor.execute(current, job_id)
+                self.events.emit(Event(EventType.PHASE_COMPLETED, job_id, {
+                    "phase": current.value, "score": result.score
+                }))
+                
+                # 3. Evaluate gate (if this phase has one)
+                if result.is_gate:
+                    gate_result = self.gates.evaluate(current, result)
+                    
+                    if gate_result.action == "block":
+                        self.state.transition(job_id, JobStatus.BLOCKED)
+                        self.events.emit(Event(EventType.GATE_BLOCKED, job_id, {
+                            "phase": current.value, "reason": gate_result.reason
+                        }))
+                        break
+                    
+                    elif gate_result.action == "retry":
+                        retry_status = JobStatus(gate_result.retry_phase)
+                        self.state.transition(job_id, retry_status)
+                        continue  # Loop back to retry phase
+                    
+                    elif gate_result.action == "manual_review":
+                        self.state.transition(job_id, JobStatus.MANUAL_REVIEW)
+                        self.events.emit(Event(EventType.MANUAL_REVIEW_REQUESTED, job_id))
+                        break  # Pause for human
+                
+                # 4. Transition to next state
+                next_status = self.state.get_next_status(current)
+                if next_status:
+                    # Check if we can keep GPU (batching)
+                    if not self.state.can_batch_with_next(current, next_status):
+                        required_now = self.state.get_required_gpu(current)
+                        required_next = self.state.get_required_gpu(next_status)
+                        if required_now != required_next:
+                            self.resources.release_all()
+                    
+                    self.state.transition(job_id, next_status)
+                else:
+                    break  # No next state — done
+        
+        except StateError as e:
+            logger.error(f"State machine error: {e}")
+            self.events.emit(Event(EventType.PHASE_FAILED, job_id, {"error": str(e)}))
+            raise
+        
+        except Exception as e:
+            logger.error(f"Pipeline error: {e}", exc_info=True)
+            self.resources.emergency_release()
+            self.events.emit(Event(EventType.PHASE_FAILED, job_id, {"error": str(e)}))
+            self.telegram.alert(f"🚨 Pipeline error: {job_id}\n{str(e)[:200]}")
+            raise
+        
+        finally:
+            self.resources.release_all()
+    
+    def resume_all(self):
+        """Resume interrupted jobs after crash."""
+        for job in self.db.get_active_jobs():
+            resume_status = self.state.get_resume_status(job["id"])
+            logger.info(f"Resuming {job['id']} from {resume_status.value}")
+            self.run_job(job["id"])
+    
+    # ─── Event Handlers ────────────────────────────────
+    
+    def _on_blocked(self, event: Event):
+        self.telegram.alert(f"⚠️ Job blocked: {event.job_id}\n{event.data.get('reason', '')}")
+    
+    def _on_gpu_oom(self, event: Event):
+        self.resources.emergency_release()
+        self.telegram.alert(f"💥 GPU OOM: {event.job_id}")
+    
+    def _on_published(self, event: Event):
+        self.telegram.send(f"✅ Published: {event.data.get('topic', '')}")
+    
+    def _on_review(self, event: Event):
+        # Trigger Telegram interactive review UI
+        pass
+```
+
+### 4.7 Phase Executor (`src/core/phase_executor.py`)
+
+```python
+"""
+Executes individual phases.
+Maps JobStatus → Phase class → result.
+Knows nothing about GPU, state, or gates.
+"""
+
+from src.core.job_state_machine import JobStatus
+from src.core.database import FactoryDB
 
 # Phase imports
 from src.phase1_research import ResearchPhase
 from src.phase2_seo import SEOPhase
 from src.phase3_script import ScriptPhase
 from src.phase4_compliance import CompliancePhase
-from src.phase5_production import ProductionPhase
+from src.phase5_production import (
+    AssetCoordinator, AudioCoordinator, VideoComposer
+)
 from src.phase6_visual_qa import VisualQAPhase
 from src.phase7_video_qa import VideoQAPhase
 from src.phase7_5_review import ManualReviewPhase
 from src.phase8_publish import PublishPhase
-from src.phase9_intelligence import IntelligencePhase
-
-logger = logging.getLogger(__name__)
 
 
-class Pipeline:
+class PhaseExecutor:
     """
-    Main orchestrator. Runs a job through all phases.
-    
-    Key responsibilities:
-    1. Phase sequencing (1 → 2 → 3 → 4 → 5 → 6 → 7 → 7.5 → 8 → 9)
-    2. GPU model swapping between phases
-    3. Checkpoint/resume on crash
-    4. Gate handling (PASS/FAIL/BLOCK)
-    5. Telegram notifications
+    Maps status → phase → execute.
+    Each phase is a self-contained module that reads from DB and writes to DB.
     """
     
-    def __init__(self):
-        self.config = load_config()
-        self.db = FactoryDB(self.config["settings"]["database"]["path"])
-        self.gpu = GPUMemoryManager(self.config["settings"]["gpu"])
-        self.telegram = TelegramBot(self.config["settings"]["telegram"])
+    def __init__(self, config: dict, db: FactoryDB):
+        self.config = config
+        self.db = db
         
-    def run_job(self, job_id: str):
-        """
-        Run a single job through the full pipeline.
-        Resumes from last completed phase if previously interrupted.
-        """
+        # Initialize phases (lazy or upfront)
+        self._phases = {
+            JobStatus.RESEARCH:     ResearchPhase(config, db),
+            JobStatus.SEO:          SEOPhase(config, db),
+            JobStatus.SCRIPT:       ScriptPhase(config, db),
+            JobStatus.COMPLIANCE:   CompliancePhase(config, db),
+            JobStatus.IMAGES:       AssetCoordinator(config, db),     # Sub-pipeline
+            JobStatus.VISUAL_QA:    VisualQAPhase(config, db),
+            JobStatus.IMAGE_REGEN:  AssetCoordinator(config, db),     # Regen mode
+            JobStatus.VIDEO:        AssetCoordinator(config, db),     # Video mode
+            JobStatus.VOICE:        AudioCoordinator(config, db),     # Sub-pipeline
+            JobStatus.MUSIC:        AudioCoordinator(config, db),
+            JobStatus.SFX:          AudioCoordinator(config, db),
+            JobStatus.COMPOSE:      VideoComposer(config, db),
+            JobStatus.FINAL_QA:     VideoQAPhase(config, db),
+            JobStatus.PUBLISH:      PublishPhase(config, db),
+        }
+    
+    def execute(self, status: JobStatus, job_id: str):
+        """Execute the phase for current status."""
+        phase = self._phases.get(status)
+        if not phase:
+            raise ValueError(f"No phase handler for status: {status}")
+        
+        return phase.run(job_id)
+```
+
+### 4.8 Phase 5 Decomposition — Sub-Pipeline
+
+```python
+# ═══ src/phase5_production/__init__.py ═══
+"""
+Phase 5 is NOT a single phase — it's a sub-pipeline with 3 coordinators:
+
+AssetCoordinator:    Images + Video (visual assets)
+AudioCoordinator:    Voice + Music + SFX (audio assets)
+VideoComposer:       FFmpeg assembly (final composition)
+
+Each coordinator manages its own generation logic.
+GPU model loading is handled by ResourceCoordinator (external).
+"""
+
+from src.phase5_production.asset_coordinator import AssetCoordinator
+from src.phase5_production.audio_coordinator import AudioCoordinator
+from src.phase5_production.video_composer import VideoComposer
+
+
+# ═══ src/phase5_production/asset_coordinator.py ═══
+"""
+Coordinates visual asset generation: images + videos.
+Handles: image generation, prompt enhancement, video generation, fallback to Ken Burns.
+"""
+
+class AssetCoordinator:
+    """
+    Manages visual asset pipeline.
+    Called at different stages:
+    - status=IMAGES → generate all images
+    - status=IMAGE_REGEN → regenerate failed images only
+    - status=VIDEO → generate all video clips
+    """
+    
+    def run(self, job_id: str) -> PhaseResult:
         job = self.db.get_job(job_id)
-        gpu_logger = GPULogger(job_id)
+        status = JobStatus(job["status"])
         
-        try:
-            # ═══════════════════════════════════════════
-            # GPU SLOT 1: Qwen 72B (Phases 1-4)
-            # ═══════════════════════════════════════════
-            if job["status"] in ["pending", "research", "seo", "script", "compliance"]:
-                self.gpu.load_model("qwen2.5:72b", model_type="ollama", logger=gpu_logger)
-                
-                # Phase 1: Research
-                if job["status"] in ["pending", "research"]:
-                    self.db.update_job_status(job_id, "research")
-                    research = ResearchPhase(self.config, self.db)
-                    research.run(job_id)
-                    
-                    # Present topics to user, wait for selection
-                    # (handled by topic_presenter → Telegram)
-                
-                # Phase 2: SEO
-                if job["status"] in ["research", "seo"]:
-                    self.db.update_job_status(job_id, "seo")
-                    seo = SEOPhase(self.config, self.db)
-                    seo.run(job_id)
-                
-                # Phase 3: Script
-                if job["status"] in ["seo", "script"]:
-                    self.db.update_job_status(job_id, "script")
-                    script = ScriptPhase(self.config, self.db)
-                    script.run(job_id)  # Write → Review → Split (up to 3 iterations)
-                
-                # Phase 4: Compliance QA (GATE)
-                if job["status"] in ["script", "compliance"]:
-                    self.db.update_job_status(job_id, "compliance")
-                    compliance = CompliancePhase(self.config, self.db)
-                    result = compliance.run(job_id)
-                    
-                    if result.blocked:
-                        self.db.block_job(job_id, "phase4", result.reason)
-                        self.telegram.alert(f"⚠️ Script blocked: {result.reason}")
-                        return  # Stop — requires human intervention
-                
-                self.gpu.unload_model(logger=gpu_logger)
-            
-            # ═══════════════════════════════════════════
-            # GPU SLOT 2: FLUX (Phase 5a - Images)
-            # ═══════════════════════════════════════════
-            if job["status"] in ["compliance", "images"]:
-                self.db.update_job_status(job_id, "images")
-                self.gpu.load_model("flux", model_type="comfyui", logger=gpu_logger)
-                
-                production = ProductionPhase(self.config, self.db, self.gpu, gpu_logger)
-                production.generate_images(job_id)
-                
-                self.gpu.unload_model(logger=gpu_logger)
-            
-            # ═══════════════════════════════════════════
-            # GPU SLOT 3: Llama Vision (Phase 6 - Visual QA)
-            # ═══════════════════════════════════════════
-            if job["status"] in ["images", "visual_qa"]:
-                self.db.update_job_status(job_id, "visual_qa")
-                self.gpu.load_model("llama3.2-vision:11b", model_type="ollama", logger=gpu_logger)
-                
-                visual_qa = VisualQAPhase(self.config, self.db)
-                result = visual_qa.run(job_id)
-                
-                self.gpu.unload_model(logger=gpu_logger)
-                
-                if result.needs_regeneration:
-                    # Reload FLUX, regenerate failed images
-                    self.gpu.load_model("flux", model_type="comfyui", logger=gpu_logger)
-                    production.regenerate_failed_images(job_id, result.failed_scenes)
-                    self.gpu.unload_model(logger=gpu_logger)
-                    
-                    # Re-check
-                    self.gpu.load_model("llama3.2-vision:11b", model_type="ollama", logger=gpu_logger)
-                    result = visual_qa.run(job_id)
-                    self.gpu.unload_model(logger=gpu_logger)
-                
-                if result.blocked:
-                    self.db.block_job(job_id, "phase6", result.reason)
-                    self.telegram.alert(f"⚠️ Visual QA failed: {result.reason}")
-                    return
-            
-            # ═══════════════════════════════════════════
-            # GPU SLOT 4: LTX-2.3 (Phase 5b - Video)
-            # ═══════════════════════════════════════════
-            if job["status"] in ["visual_qa", "video"]:
-                self.db.update_job_status(job_id, "video")
-                self.gpu.load_model("ltx", model_type="comfyui", logger=gpu_logger)
-                
-                production.generate_videos(job_id)
-                
-                self.gpu.unload_model(logger=gpu_logger)
-            
-            # ═══════════════════════════════════════════
-            # GPU SLOT 5: Fish Speech (Phase 5c - Voice)
-            # ═══════════════════════════════════════════
-            if job["status"] in ["video", "voice"]:
-                self.db.update_job_status(job_id, "voice")
-                self.gpu.load_model("fish_speech", model_type="python", logger=gpu_logger)
-                
-                production.generate_voice(job_id)
-                
-                self.gpu.unload_model(logger=gpu_logger)
-            
-            # ═══════════════════════════════════════════
-            # GPU SLOT 6: MusicGen (Phase 5d - Music)
-            # ═══════════════════════════════════════════
-            if job["status"] in ["voice", "music"]:
-                self.db.update_job_status(job_id, "music")
-                self.gpu.load_model("musicgen", model_type="python", logger=gpu_logger)
-                
-                production.generate_music(job_id)
-                # Content ID check runs here (CPU-based fingerprinting)
-                
-                self.gpu.unload_model(logger=gpu_logger)
-            
-            # ═══════════════════════════════════════════
-            # GPU SLOT 7: AudioGen (Phase 5e - SFX)
-            # ═══════════════════════════════════════════
-            if job["status"] in ["music", "sfx"]:
-                self.db.update_job_status(job_id, "sfx")
-                self.gpu.load_model("audiogen", model_type="python", logger=gpu_logger)
-                
-                production.generate_sfx(job_id)
-                
-                self.gpu.unload_model(logger=gpu_logger)
-            
-            # ═══════════════════════════════════════════
-            # CPU ONLY: FFmpeg Compose (Phase 5f)
-            # ═══════════════════════════════════════════
-            if job["status"] in ["sfx", "compose"]:
-                self.db.update_job_status(job_id, "compose")
-                # No GPU needed
-                production.compose_video(job_id)
-            
-            # ═══════════════════════════════════════════
-            # GPU SLOT 8: Qwen 72B (Phase 7 - Final QA)
-            # ═══════════════════════════════════════════
-            if job["status"] in ["compose", "final_qa"]:
-                self.db.update_job_status(job_id, "final_qa")
-                self.gpu.load_model("qwen2.5:72b", model_type="ollama", logger=gpu_logger)
-                
-                final_qa = VideoQAPhase(self.config, self.db)
-                result = final_qa.run(job_id)
-                
-                self.gpu.unload_model(logger=gpu_logger)
-                
-                if result.blocked:
-                    self.db.block_job(job_id, "phase7", result.reason)
-                    self.telegram.alert(f"⚠️ Final QA failed: {result.reason}")
-                    return
-            
-            # ═══════════════════════════════════════════
-            # Phase 7.5: Manual Review (if required)
-            # ═══════════════════════════════════════════
-            if job["status"] in ["final_qa", "manual_review"]:
-                review = ManualReviewPhase(self.config, self.db, self.telegram)
-                if review.is_required(job_id):
-                    self.db.update_job_status(job_id, "manual_review")
-                    review.request_review(job_id)
-                    return  # Pauses here — resumes when Yusif responds
-            
-            # ═══════════════════════════════════════════
-            # GPU SLOT 9: FLUX (Phase 8 - Thumbnails)
-            # ═══════════════════════════════════════════
-            if job["status"] in ["manual_review", "final_qa", "publish"]:
-                self.db.update_job_status(job_id, "publish")
-                self.gpu.load_model("flux", model_type="comfyui", logger=gpu_logger)
-                
-                publisher = PublishPhase(self.config, self.db)
-                publisher.generate_thumbnails(job_id)
-                
-                self.gpu.unload_model(logger=gpu_logger)
-                
-                # CPU: SRT, metadata, upload
-                publisher.generate_subtitles(job_id)
-                publisher.assemble_metadata(job_id)
-                publisher.upload_to_youtube(job_id)
-                publisher.generate_shorts(job_id)
-                
-                self.db.update_job_status(job_id, "published")
-                self.telegram.send(f"✅ Published: {job['topic']}")
-            
-            # ═══════════════════════════════════════════
-            # Phase 9: Performance Intelligence (scheduled)
-            # ═══════════════════════════════════════════
-            # Phase 9 runs on a cron schedule, not inline
-            # See: src/phase9_intelligence/
-            
-        except Exception as e:
-            logger.error(f"Pipeline error on job {job_id}: {e}", exc_info=True)
-            self.gpu.emergency_cleanup(logger=gpu_logger)
-            self.telegram.alert(f"🚨 Pipeline error: {job_id}\n{str(e)[:200]}")
-            raise
+        if status == JobStatus.IMAGES:
+            return self._generate_all_images(job_id)
+        elif status == JobStatus.IMAGE_REGEN:
+            return self._regenerate_failed(job_id)
+        elif status == JobStatus.VIDEO:
+            return self._generate_all_videos(job_id)
+    
+    def _generate_all_images(self, job_id):
+        scenes = self.db.get_scenes(job_id)
+        for scene in scenes:
+            prompt, negative = enhance_prompt(scene["visual_prompt"], ...)
+            image_path = self.image_gen.generate(prompt, negative)
+            self.db.update_scene_asset(job_id, scene["scene_index"], image_path=image_path)
+        return PhaseResult(success=True)
+    
+    # ... etc
 
 
-    def resume_all(self):
-        """Resume any interrupted jobs (after crash/restart)."""
-        active_jobs = self.db.get_active_jobs()
-        for job in active_jobs:
-            logger.info(f"Resuming job: {job['id']} from status: {job['status']}")
-            self.run_job(job["id"])
+# ═══ src/phase5_production/audio_coordinator.py ═══
+"""
+Coordinates all audio generation: voice, music, SFX.
+Each runs in sequence (different GPU models).
+"""
+
+class AudioCoordinator:
+    def run(self, job_id: str) -> PhaseResult:
+        job = self.db.get_job(job_id)
+        status = JobStatus(job["status"])
+        
+        if status == JobStatus.VOICE:
+            return self._generate_voice(job_id)
+        elif status == JobStatus.MUSIC:
+            return self._generate_music(job_id)
+        elif status == JobStatus.SFX:
+            return self._generate_sfx(job_id)
+
+
+# ═══ src/phase5_production/video_composer.py ═══
+"""
+FFmpeg assembly — CPU only.
+Combines: video clips + voice + music + SFX + text overlays + intro/outro.
+"""
+
+class VideoComposer:
+    def run(self, job_id: str) -> PhaseResult:
+        # ... FFmpeg assembly logic
+        pass
 ```
 
 ---
@@ -812,6 +1477,24 @@ from typing import Optional
 
 
 class FactoryDB:
+    """
+    SQLite Scaling Strategy:
+    ─────────────────────────
+    NOW (v1):   Single factory.db — all tables.
+                Perfect for single machine, <1000 jobs.
+    
+    LATER (v2): Split heavy tables to separate DBs:
+                ├── factory.db          — jobs, scenes, scripts (core)
+                ├── analytics.db        — youtube_analytics, revenue (heavy reads)
+                ├── intelligence.db     — performance_rules, patterns (ML)
+                └── events.db           — event_store (audit, append-only)
+                
+                OR: migrate analytics to Parquet files (columnar, fast aggregation)
+                OR: migrate to Postgres when multi-machine
+    
+    TRIGGER: When factory.db > 500MB or analytics queries > 1 sec
+    """
+    
     def __init__(self, db_path: str = "data/factory.db"):
         self.db_path = db_path
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
@@ -1815,13 +2498,18 @@ python -m src.cli run --topic "test" --channel documentary_ar  # Full test
 
 | Decision | Choice | Why |
 |----------|--------|-----|
-| Database | SQLite (not Postgres) | Single machine, no network overhead, WAL handles concurrent reads |
-| GPU scheduling | Sequential (not parallel) | Single GPU — can't run 2 models simultaneously |
-| LLM hosting | Ollama (not raw transformers) | Easy model management, API interface, memory control via keep_alive=0 |
+| Architecture | Decomposed orchestrator (not God Object) | PipelineRunner + StateMachine + GateEvaluator + ResourceCoordinator = testable, maintainable |
+| State management | Formal FSM with transition map | Prevents invalid status jumps, enables safe resume, catches bugs at compile-time |
+| Event system | In-process EventBus + EventStore | Decouples phases from side effects. Not a broker — no RabbitMQ overhead |
+| Database | SQLite now, split later | Single machine = SQLite. Split analytics to separate DB or Parquet when >500MB |
+| GPU scheduling | Sequential with ResourceCoordinator | Single GPU — coordinator handles batching (same model = no swap) |
+| LLM hosting | Ollama (not raw transformers) | API interface, memory control via keep_alive=0, easy model switching |
 | Image gen | ComfyUI (not diffusers) | Workflow-based, supports LoRA, easy model swapping, web UI for debugging |
-| Voice | Fish Speech 1.5 clone (not from-scratch TTS) | Real human voice recordings cloned = natural Arabic pronunciation |
-| Config | YAML (not JSON/TOML) | Readable, supports comments, good for multi-line strings (script guidelines) |
-| Error handling | Checkpoint + resume (not restart) | 3-hour pipeline — can't restart from scratch on every error |
+| Voice | Fish Speech 1.5 clone from real recordings | Human recordings cloned = natural Arabic pronunciation |
+| Phase 5 | Sub-pipeline (3 coordinators, not 1 phase) | AssetCoordinator + AudioCoordinator + VideoComposer — most complex phase deserves structure |
+| Agents | 3 tiers: core / optimization / experimental | Clear priority. Won't confuse production-critical with nice-to-have |
+| Config | YAML (not JSON/TOML) | Readable, supports comments, good for multi-line strings |
+| Error handling | Checkpoint + resume via FSM | 3-hour pipeline — FSM ensures correct resume point after any crash |
 | Notifications | Telegram (not email/SMS) | Instant, interactive (inline buttons), free, Yusif already uses it |
 | Phase 9 | Cron-based (not inline) | Analytics data isn't available immediately — needs 24h+ delay |
 | Manual review | Selective (not always) | High-quality videos auto-publish; only flag edge cases |
@@ -1830,13 +2518,26 @@ python -m src.cli run --topic "test" --channel documentary_ar  # Full test
 
 ## 13. Critical Rules for AI Builder
 
-1. **NEVER load 2 GPU models simultaneously.** Always unload → flush → verify → load.
-2. **ALWAYS write to DB before starting a phase.** This enables crash recovery.
-3. **ALWAYS use English for FLUX/LTX prompts.** Arabic visual prompts produce garbage.
-4. **ALWAYS include negative prompts** for images: "text, writing, letters, watermark"
-5. **ALWAYS check VRAM after unload.** If >15% still used = leak. Log it.
-6. **NEVER hardcode paths.** Everything comes from config/settings.yaml.
-7. **NEVER use unofficial YouTube APIs for data that matters.** Official API only.
-8. **ALWAYS test voice clone quality** before using in production. Score must be >6/10.
-9. **ALWAYS run Content ID check** on generated music before composing into video.
-10. **ALWAYS save intermediate outputs to disk** (not just DB). Pipeline must be resumable.
+### Architecture Rules
+1. **NEVER put phase logic in PipelineRunner.** It's a thin coordinator only. Phase logic goes in PhaseExecutor.
+2. **ALWAYS transition status via JobStateMachine.** Direct DB updates bypass validation = bugs.
+3. **ALWAYS emit events via EventBus.** Don't call Telegram/logging directly from phases.
+4. **NEVER add agents to core_agents/ without explicit approval.** Default to experimental/.
+5. **Phase 5 sub-modules report to their Coordinator** (Asset/Audio/Composer), not to PipelineRunner.
+
+### GPU Rules
+6. **NEVER load 2 GPU models simultaneously.** ResourceCoordinator handles this — trust it.
+7. **ALWAYS check VRAM after unload.** If >15% still used = leak. Log it.
+8. **Use ResourceCoordinator.prepare_for_status()** — don't call GPUManager directly from phases.
+
+### Content Rules
+9. **ALWAYS use English for FLUX/LTX prompts.** Arabic visual prompts produce garbage.
+10. **ALWAYS include negative prompts** for images: "text, writing, letters, watermark"
+11. **ALWAYS test voice clone quality** before using in production. Score must be >6/10.
+12. **ALWAYS run Content ID check** on generated music before composing into video.
+13. **NEVER use unofficial YouTube APIs for data that matters.** Official API only.
+
+### Data Rules
+14. **NEVER hardcode paths.** Everything comes from config/settings.yaml.
+15. **ALWAYS save intermediate outputs to disk** (not just DB). Pipeline must be resumable.
+16. **Status changes → DB + EventStore.** Both must be updated atomically.
