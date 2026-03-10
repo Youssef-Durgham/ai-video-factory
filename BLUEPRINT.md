@@ -391,6 +391,105 @@ Generate all media assets — images, video clips, voice, music, SFX — and com
   - Style consistency: Use consistent style LoRA per channel
   - Character consistency: Use IP-Adapter for recurring characters/figures
   - Negative prompt always includes: "text, writing, letters, words, watermark, subtitle"
+
+- **🌍 Arabic/Middle Eastern Content Optimization:**
+  ```
+  المشكلة: FLUX و LTX مدرّبين أغلب بيانات غربية.
+  المحتوى العربي يحتاج prompting دقيق وإلا النتيجة تكون "Hollywood version of Middle East"
+  ```
+  
+  **Prompt Engineering Rules for Arabic Content:**
+  ```yaml
+  middle_east_prompt_rules:
+    # ─── الأماكن والعمارة ──────────────────
+    architecture:
+      use: "Islamic architecture, arabesque patterns, mashrabiya windows,
+            Ottoman architecture, Abbasid-era buildings, modern Gulf skyline,
+            Baghdad street scene, Riyadh cityscape, Cairo old town"
+      avoid: "generic desert, Aladdin-style, orientalist, fantasy Arabian"
+      note: "يحدد البلد بالضبط — عمارة بغداد ≠ عمارة دبي ≠ عمارة القاهرة"
+    
+    # ─── الأشخاص والملابس ──────────────────
+    people:
+      use: "Middle Eastern man in thobe/dishdasha, Arab woman in hijab,
+            Iraqi businessman in suit, Saudi man in white thobe and ghutra,
+            Egyptian street vendor, Moroccan market seller"
+      avoid: "stereotypical, orientalist, belly dancer, generic Arab"
+      skin_tones: "olive, brown, Mediterranean — specify per region"
+      note: "الملابس تختلف بالبلد — دشداشة عراقية ≠ ثوب سعودي ≠ جلابية مصرية"
+    
+    # ─── المناظر الطبيعية ──────────────────
+    landscapes:
+      use: "Mesopotamian marshlands, Nile delta farmland, Atlas mountains,
+            Arabian desert with specific features, Gulf coast, Levantine hills,
+            palm groves, olive orchards"
+      avoid: "generic sandy desert, camels only, Lawrence of Arabia style"
+      note: "الشرق الأوسط مو بس صحراء — فيه أهوار وجبال وأنهار وغابات"
+    
+    # ─── السياسة والتاريخ ──────────────────
+    politics_history:
+      use: "government building, parliament session, diplomatic meeting,
+            military equipment (realistic), protest crowd, press conference,
+            historical photograph style, documentary still"
+      avoid: "violent imagery, gore, graphic war scenes, disrespectful depictions"
+      note: "سياسي وواقعي — مو دعائي أو تحريضي"
+    
+    # ─── الاقتصاد والأعمال ──────────────────
+    economy:
+      use: "oil refinery, stock market screen with Arabic text, Gulf port,
+            construction site Dubai-style, souk/market, modern office"
+      avoid: "poverty porn, exaggerated wealth stereotypes"
+    
+    # ─── Style Modifiers for Authenticity ──────
+    style_modifiers:
+      lighting: "warm golden hour, dramatic sunset, harsh noon sun"
+      color_palette: "warm earth tones, sand gold, deep blue, olive green"
+      atmosphere: "dusty atmosphere, heat haze, dramatic shadows"
+      photography_style: "photojournalism, documentary photography, cinematic still"
+  ```
+  
+  **LoRA Models for Arabic Content (download/fine-tune):**
+  ```
+  Recommended LoRAs:
+  ├── Middle Eastern Architecture LoRA — enhances Islamic architecture generation
+  ├── Arabic Calligraphy LoRA — for decorative elements (NOT text in images)
+  ├── Photojournalism LoRA — documentary-style realistic images
+  ├── Cinematic Lighting LoRA — dramatic lighting for documentary feel
+  └── Regional Face LoRA — better Middle Eastern facial features
+  
+  Fine-tune options (if needed):
+  ├── Collect 500-1000 Middle Eastern documentary stills
+  ├── Train FLUX LoRA (~2 hours on RTX 3090)
+  └── Result: much better regional accuracy
+  ```
+  
+  **Scene Splitter Prompt Enhancement:**
+  ```python
+  def enhance_visual_prompt(raw_prompt: str, topic_region: str) -> str:
+      """
+      Automatically enhances visual prompts with regional accuracy.
+      """
+      # Add regional context
+      if topic_region == "iraq":
+          raw_prompt += ", Iraqi setting, Mesopotamian, Tigris river area"
+      elif topic_region == "gulf":
+          raw_prompt += ", Gulf state setting, modern Arabian architecture"
+      elif topic_region == "egypt":
+          raw_prompt += ", Egyptian setting, Nile region, Cairo urban"
+      elif topic_region == "levant":
+          raw_prompt += ", Levantine setting, stone buildings, Mediterranean"
+      elif topic_region == "maghreb":
+          raw_prompt += ", North African setting, Moroccan/Tunisian architecture"
+      
+      # Add documentary style
+      raw_prompt += ", photorealistic, documentary photography, cinematic lighting"
+      
+      # Add negative
+      negative = ("text, writing, letters, watermark, cartoon, anime, "
+                  "orientalist, stereotypical, fantasy, Aladdin-style")
+      
+      return raw_prompt, negative
+  ```
 - **Auto-select:** LLM picks best image based on scene context
 - **Time:** ~15-30 sec/image on RTX 3090
 - **Output:** Best image per scene saved as PNG
@@ -409,21 +508,230 @@ Generate all media assets — images, video clips, voice, music, SFX — and com
 - **Time:** ~30-90 sec/clip on RTX 3090
 - **Output:** MP4 clips per scene (5-10 sec each)
 
-#### 5.3 Voice Generator (Fish Speech)
+#### 5.3 Voice Engine — Pre-Built Voice Library + Smart Selection 🎙️
 - **Model:** Fish Speech / OpenAudio S1 (local)
 - **VRAM:** ~4GB
-- **Setup:**
-  - Clone a high-quality Arabic male voice (news anchor style)
-  - Each channel can have its own voice profile
-  - Voice profiles stored as reference audio files
-- **Per scene:**
-  - Input: `narration_text` + voice profile
+
+##### 5.3.1 Pre-Built Voice Library
+- **النظام يستخدم مكتبة أصوات جاهزة (ready voices) مو يولّد أصوات من الصفر**
+- **مصادر الأصوات:**
+  ```
+  Source 1: ElevenLabs Voice Library (مجاني — آلاف الأصوات الجاهزة)
+     → تنزيل عينات عربية عالية الجودة
+     → تستخدم كـ reference audio لـ Fish Speech
+  
+  Source 2: تسجيلات مذيعين/رواة محترفين (royalty-free)
+     → مواقع مثل: Voices.com, Fiverr (شراء عينة 5 دقائق)
+     → أو: تسجيل ذاتي لعينات بأصوات مختلفة
+  
+  Source 3: Creative Commons Arabic audiobooks/podcasts
+     → استخراج عينات نظيفة كـ reference
+  
+  Source 4: AI voice marketplaces
+     → CoquiTTS, XTTS voice packs
+  ```
+
+- **Voice Library المحلية:**
+  ```yaml
+  voice_library:
+    # ─── أصوات رجالية ───────────────────
+    male_authoritative:
+      id: "v_male_auth_01"
+      name: "صوت المذيع الرسمي"
+      reference_file: "config/voices/male_authoritative_01.wav"
+      reference_duration_sec: 30
+      characteristics:
+        gender: "male"
+        age_range: "35-50"
+        tone: "authoritative, deep, calm"
+        accent: "MSA (فصحى)"
+        speed: "medium"
+        emotion_range: "wide"  # يقدر يتنوع بين هادئ ودرامي
+      best_for: ["documentary", "politics", "history"]
+      quality_score: 9.2  # من تقييم أولي
+      
+    male_energetic:
+      id: "v_male_energy_01"
+      name: "صوت الرياضة الحماسي"
+      reference_file: "config/voices/male_energetic_01.wav"
+      characteristics:
+        gender: "male"
+        age_range: "25-35"
+        tone: "energetic, fast, passionate"
+        accent: "MSA with slight colloquial energy"
+        speed: "fast"
+        emotion_range: "medium"
+      best_for: ["sports", "entertainment", "countdown"]
+      quality_score: 8.8
+      
+    male_mysterious:
+      id: "v_male_mystery_01"
+      name: "صوت الألغاز والتحقيقات"
+      reference_file: "config/voices/male_mysterious_01.wav"
+      characteristics:
+        gender: "male"
+        age_range: "30-45"
+        tone: "mysterious, low, suspenseful"
+        accent: "MSA"
+        speed: "slow-medium"
+        emotion_range: "wide"
+      best_for: ["mysteries", "investigation", "conspiracy"]
+      quality_score: 8.5
+
+    male_narrator:
+      id: "v_male_narr_01"
+      name: "صوت الراوي الكلاسيكي"
+      reference_file: "config/voices/male_narrator_01.wav"
+      characteristics:
+        gender: "male"
+        age_range: "40-55"
+        tone: "warm, storytelling, cinematic"
+        accent: "MSA classical"
+        speed: "medium-slow"
+        emotion_range: "wide"
+      best_for: ["storytelling", "history", "biography"]
+      quality_score: 9.0
+
+    # ─── أصوات نسائية ───────────────────
+    female_educational:
+      id: "v_female_edu_01"
+      name: "صوت العلوم والتعليم"
+      reference_file: "config/voices/female_educational_01.wav"
+      characteristics:
+        gender: "female"
+        age_range: "28-40"
+        tone: "clear, educational, engaging"
+        accent: "MSA"
+        speed: "medium"
+        emotion_range: "medium"
+      best_for: ["science", "technology", "explainer"]
+      quality_score: 8.7
+
+    female_dramatic:
+      id: "v_female_drama_01"
+      name: "صوت الدراما والقصص"
+      reference_file: "config/voices/female_dramatic_01.wav"
+      characteristics:
+        gender: "female"
+        age_range: "30-45"
+        tone: "dramatic, emotional, cinematic"
+        accent: "MSA"
+        speed: "medium"
+        emotion_range: "wide"
+      best_for: ["human_interest", "social_issues", "storytelling"]
+      quality_score: 8.6
+
+    # ─── أصوات خاصة ───────────────────
+    young_male:
+      id: "v_young_male_01"
+      name: "صوت الشباب"
+      reference_file: "config/voices/young_male_01.wav"
+      characteristics:
+        gender: "male"
+        age_range: "20-28"
+        tone: "casual, modern, relatable"
+        accent: "MSA with modern touch"
+        speed: "medium-fast"
+        emotion_range: "medium"
+      best_for: ["entertainment", "technology", "culture"]
+      quality_score: 8.3
+  ```
+
+##### 5.3.2 Smart Voice Selection Agent
+- **الـ agent يختار الصوت الأنسب لكل فيديو أوتوماتيك:**
+  ```python
+  def select_best_voice(job_data: dict) -> str:
+      """
+      Selects optimal voice from library based on content analysis.
+      """
+      topic = job_data['topic']
+      channel = job_data['channel_id']
+      narrative_style = job_data['narrative_style']
+      emotional_arc = job_data['emotional_arc']
+      
+      # 1. Channel default (if configured)
+      channel_voice = get_channel_default_voice(channel)
+      
+      # 2. Content-based matching
+      scores = {}
+      for voice_id, voice in voice_library.items():
+          score = 0
+          
+          # Topic category match
+          if job_data['category'] in voice['best_for']:
+              score += 30
+          
+          # Narrative style match
+          if narrative_style == "investigative" and voice['tone'] contains "mysterious":
+              score += 20
+          if narrative_style == "storytelling" and voice['tone'] contains "storytelling":
+              score += 20
+          if narrative_style == "explainer" and voice['tone'] contains "educational":
+              score += 20
+          
+          # Emotion range needed
+          arc_intensity = max(emotional_arc) - min(emotional_arc)
+          if arc_intensity > 5 and voice['emotion_range'] == "wide":
+              score += 15
+          
+          # Channel consistency bonus (same voice = branding)
+          if voice_id == channel_voice:
+              score += 25
+          
+          # Quality score
+          score += voice['quality_score'] * 2
+          
+          # Anti-repetition: different voice than last 3 videos on channel
+          if voice_id in get_recent_voices(channel, last_n=3):
+              score -= 10  # Slight penalty, not blocking
+          
+          scores[voice_id] = score
+      
+      return max(scores, key=scores.get)
+  ```
+
+- **Channel-Voice Binding (اختياري):**
+  ```yaml
+  # في channels.yaml — كل قناة ممكن تقفل على صوت معين
+  channels:
+    documentary_ar:
+      default_voice: "v_male_auth_01"      # دايماً نفس الصوت = براندينج
+      allow_voice_switch: false             # لا يغيّر
+      
+    sports_ar:
+      default_voice: "v_male_energy_01"
+      allow_voice_switch: false
+      
+    science_ar:
+      default_voice: null                   # يختار الأنسب كل مرة
+      allow_voice_switch: true
+      preferred_voices: ["v_female_edu_01", "v_male_narr_01"]
+  ```
+
+##### 5.3.3 Voice Quality Assurance
+- **Per scene generation:**
+  - Input: `narration_text` + selected voice reference + emotion tag (Feature 30)
   - Output: WAV audio clip
   - Auto-adjust speed to match target `duration_seconds`
-- **Quality checks:**
-  - Arabic pronunciation validation
-  - No glitches/artifacts detection
-  - Re-generate if quality score < threshold
+- **Quality checks (automated):**
+  ```
+  Check 1: Arabic pronunciation — compare phonemes vs expected
+  Check 2: Glitch detection — no clicks, pops, or artifacts
+  Check 3: Emotion match — does the tone match the scene emotion tag?
+  Check 4: Speed consistency — no sudden speedups/slowdowns
+  Check 5: Volume consistency — no sudden loud/quiet sections
+  
+  Score < 6/10 → regenerate with same voice
+  Score < 4/10 → try different voice from library
+  3 failures → alert Yusif: "Voice quality issue on scene X"
+  ```
+- **Fallback chain:**
+  ```
+  Primary:   Fish Speech + selected library voice
+  Fallback1: Fish Speech + different library voice
+  Fallback2: OpenAudio S1 + selected library voice
+  Fallback3: ElevenLabs API (paid, last resort)
+  ```
 - **Time:** ~5-10 sec/clip on RTX 3090
 - **Output:** WAV audio per scene
 
@@ -1208,6 +1516,9 @@ CREATE TABLE jobs (
     topic_source TEXT,                      -- "trend_scanner" | "calendar" | "manual" | "trending_hijack"
     priority TEXT DEFAULT 'normal',         -- "normal" | "fast_track" | "seasonal"
     narrative_style TEXT,                   -- "investigative" | "storytelling" | "explainer" | etc.
+    selected_voice_id TEXT,                 -- "v_male_auth_01" — from voice library
+    voice_selection_reason TEXT,            -- Why this voice was chosen
+    topic_region TEXT,                      -- "iraq" | "gulf" | "egypt" | "levant" | "maghreb" | "global"
     target_length_min INTEGER,              -- Dynamic length (Feature 37)
     
     -- Phase completion timestamps
@@ -2598,10 +2909,15 @@ ai-video-factory/
 ├── config/
 │   ├── channels.yaml           # Channel definitions
 │   ├── youtube_policies.md     # YouTube ToS summary for compliance agent
-│   ├── voices/                 # Voice reference audio files
-│   │   ├── arabic_male_deep.wav
-│   │   ├── arabic_male_news.wav
-│   │   └── arabic_female_calm.wav
+│   ├── voices/                 # Pre-built voice library (ready voices)
+│   │   ├── male_authoritative_01.wav    # مذيع رسمي — documentary/politics
+│   │   ├── male_energetic_01.wav        # حماسي — sports/entertainment
+│   │   ├── male_mysterious_01.wav       # غامض — mysteries/investigation
+│   │   ├── male_narrator_01.wav         # راوي كلاسيكي — storytelling/history
+│   │   ├── female_educational_01.wav    # تعليمي — science/explainer
+│   │   ├── female_dramatic_01.wav       # درامي — human interest/social
+│   │   ├── young_male_01.wav            # شبابي — tech/culture
+│   │   └── voice_library.yaml           # Voice metadata + characteristics
 │   └── templates/              # Intro/outro video templates
 │       ├── documentary_intro.mp4
 │       └── documentary_outro.mp4
