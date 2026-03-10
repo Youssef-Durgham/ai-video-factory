@@ -379,21 +379,243 @@ Generate all media assets — images, video clips, voice, music, SFX — and com
      - Format: MP4
 - **Output:** Final video MP4 → goes to Phase 7
 
-### Production Pipeline Order (GPU Scheduling)
-```
-Since single GPU, run sequentially:
+### GPU Memory Management System (CRITICAL) 🧠
 
-1. FLUX images (all scenes)       → ~20-40 min
-   ── Phase 6: Visual QA ──      → ~2-5 min (LLM check)
-   (re-generate failed images)    → ~5-10 min if needed
-2. LTX-2.3 videos (all scenes)    → ~60-120 min
-3. Fish Speech (all scenes)       → ~5-10 min
-4. MusicGen (3-4 tracks)          → ~5-10 min
-5. AudioCraft SFX (all scenes)    → ~5-10 min
-6. FFmpeg compose (CPU)           → ~5-10 min
-   ── Phase 7: Final QA ──       → ~2-5 min
-                                    ─────────
-                         Total:    ~2-3 hours per video
+**Problem:** Single RTX 3090 (24GB VRAM). Models cannot coexist in memory:
+| Model | VRAM Usage | RAM Offload |
+|-------|-----------|-------------|
+| Qwen 72B Q4 | ~12-16GB | + ~26GB system RAM |
+| FLUX.1-dev | ~12GB | — |
+| LTX-2.3 | ~12GB | — |
+| Llama 3.2 Vision | ~7GB | — |
+| Fish Speech | ~4GB | — |
+| MusicGen | ~4GB | — |
+| AudioGen | ~4GB | — |
+| SadTalker | ~4GB | — |
+| Real-ESRGAN | CPU only | ~2GB RAM |
+
+**Solution: GPU Slot System — one model at a time, full VRAM flush between each.**
+
+#### Memory Manager (`src/utils/gpu_manager.py`)
+```python
+class GPUMemoryManager:
+    """
+    Ensures only ONE model occupies VRAM at any time.
+    Full cache clear between model swaps.
+    """
+    
+    def load_model(self, model_name):
+        # 1. Unload current model completely
+        self.unload_current()
+        # 2. Force VRAM flush
+        torch.cuda.empty_cache()
+        torch.cuda.ipc_collect()
+        gc.collect()
+        # 3. Verify VRAM is actually free
+        free_vram = torch.cuda.mem_get_info()[0] / 1e9
+        assert free_vram > 20, f"VRAM not freed: {free_vram}GB free"
+        # 4. Load new model
+        self.current = self._load(model_name)
+        
+    def unload_current(self):
+        if self.current:
+            del self.current
+            self.current = None
+            # Kill Ollama server if LLM was loaded
+            if self.current_type == "llm":
+                subprocess.run(["ollama", "stop", self.current_name])
+            # Clear ComfyUI pipeline if image/video model
+            if self.current_type == "comfyui":
+                comfyui_api.free_memory()
+            torch.cuda.empty_cache()
+            gc.collect()
+            # Wait for VRAM to fully release
+            time.sleep(2)
+            self._verify_vram_free()
+```
+
+#### Model Loading Strategy
+```
+Strategy 1: Ollama for LLMs (Qwen, Llama Vision)
+  → ollama run qwen2.5:72b → processes tasks → ollama stop qwen2.5:72b
+  → VRAM freed → next model loads
+
+Strategy 2: ComfyUI for Image/Video (FLUX, LTX-2.3)
+  → ComfyUI API: load workflow → generate → unload model → free memory
+  → ComfyUI supports model unloading via API
+
+Strategy 3: Direct Python for Audio (Fish Speech, MusicGen, AudioGen)
+  → Load model → process all scenes → del model → torch.cuda.empty_cache()
+
+Strategy 4: CPU-only (Real-ESRGAN, FFmpeg)
+  → No VRAM needed → can run parallel with GPU tasks
+```
+
+#### Swap Optimization: Batch by Model
+```
+❌ BAD: Load/unload per scene (swap 80 times)
+   Scene 1: load FLUX → generate → unload → load LTX → generate → unload → ...
+   Scene 2: load FLUX → generate → unload → load LTX → generate → unload → ...
+
+✅ GOOD: Batch all work per model (swap 7 times total)
+   FLUX:        load once → generate ALL 60 images → unload     (~30 min)
+   Vision LLM:  load once → check ALL 60 images → unload        (~5 min)
+   FLUX:        load again → regenerate failed images → unload   (~5 min, if needed)
+   LTX-2.3:    load once → generate ALL 60 videos → unload      (~90 min)
+   Fish Speech: load once → narrate ALL 60 scenes → unload      (~10 min)
+   MusicGen:    load once → generate ALL tracks → unload         (~10 min)
+   AudioGen:    load once → generate ALL SFX → unload            (~5 min)
+   FFmpeg:      CPU only → compose final video                   (~10 min)
+   Qwen 72B:    load once → all QA checks → unload              (~10 min)
+```
+
+#### VRAM Monitoring & Safety
+```python
+class VRAMMonitor:
+    """Runs in background thread, monitors VRAM health."""
+    
+    THRESHOLDS = {
+        "warning": 0.90,   # 90% VRAM used → log warning
+        "critical": 0.95,  # 95% VRAM used → force cleanup
+        "oom_prevention": 0.98  # 98% → kill current process
+    }
+    
+    def monitor_loop(self):
+        while True:
+            used, total = torch.cuda.mem_get_info()
+            usage_pct = 1 - (used / total)
+            
+            if usage_pct > self.THRESHOLDS["oom_prevention"]:
+                self.force_kill_and_flush()  # prevent OOM crash
+                self.alert_telegram("⚠️ VRAM OOM prevented — flushed GPU")
+                
+            elif usage_pct > self.THRESHOLDS["critical"]:
+                torch.cuda.empty_cache()
+                gc.collect()
+                
+            time.sleep(5)  # check every 5 seconds
+```
+
+#### Ollama Configuration for VRAM Control
+```yaml
+# ~/.ollama/config.yaml (or environment variables)
+OLLAMA_NUM_PARALLEL: 1          # Only 1 request at a time
+OLLAMA_MAX_LOADED_MODELS: 1     # Only 1 model in VRAM
+OLLAMA_KEEP_ALIVE: "0"          # Unload model immediately after use (no idle caching)
+OLLAMA_GPU_OVERHEAD: "500MB"    # Reserve 500MB for system
+```
+- `KEEP_ALIVE=0` is critical — default Ollama keeps model in VRAM for 5 min
+- Without this, Qwen stays in VRAM and blocks FLUX from loading
+
+#### ComfyUI Memory Configuration
+```python
+# ComfyUI API: force model unload after generation
+def generate_and_free(workflow, images_needed):
+    results = comfyui_api.queue_prompt(workflow)
+    # Wait for completion
+    comfyui_api.wait_for_prompt(results['prompt_id'])
+    # Force unload ALL models from VRAM
+    comfyui_api.free_memory(unload_models=True)
+    # Verify
+    time.sleep(2)
+    assert get_free_vram() > 20  # GB
+    return results
+```
+
+#### Swap Time Budget
+| Swap | Time | Notes |
+|------|------|-------|
+| Unload any model | ~2-5 sec | del + cache clear + gc |
+| Load Qwen 72B Q4 | ~30-45 sec | 42GB from disk → GPU+RAM |
+| Load FLUX | ~10-15 sec | 12GB from disk → VRAM |
+| Load LTX-2.3 | ~10-15 sec | 8GB from disk → VRAM |
+| Load Fish Speech | ~5 sec | 2GB → VRAM |
+| Load MusicGen | ~5 sec | 3.3GB → VRAM |
+| **Total swap overhead** | **~3-5 min** | **7 swaps per video** |
+
+#### Error Recovery
+```
+IF VRAM OOM during generation:
+  1. Kill current process
+  2. torch.cuda.empty_cache() + gc.collect()
+  3. Verify VRAM free
+  4. Retry current batch
+  5. If OOM again → reduce batch size (e.g., 1 image at a time instead of 3)
+  6. If still failing → alert Yusif: "GPU memory issue"
+
+IF model fails to load:
+  1. Verify VRAM is actually free (previous model leaked?)
+  2. Force: nvidia-smi --gpu-reset (last resort)
+  3. Retry load
+  4. If still failing → skip to next phase, alert Yusif
+```
+
+### Production Pipeline Order (with GPU Swaps)
+```
+Single RTX 3090 — one model at a time, full VRAM flush between each:
+
+Phase 1-4: SCRIPT & QA (Qwen 72B)
+  🧠 Load Qwen 72B ──────────────────────── (~45 sec)
+  ├── Phase 1: Research analysis            (~5 min)
+  ├── Phase 2: SEO + titles + tags          (~5 min)
+  ├── Phase 3: Script + review + split      (~15 min)
+  └── Phase 4: Compliance QA                (~5 min)
+  🗑️ Unload Qwen ─────────────────────────── (~3 sec)
+  ⏱️ Subtotal: ~30 min
+
+Phase 5a: IMAGES (FLUX)
+  🎨 Load FLUX ────────────────────────────── (~15 sec)
+  └── Generate ALL scene images (60×)       (~30 min)
+  🗑️ Unload FLUX ──────────────────────────── (~3 sec)
+
+Phase 6: VISUAL QA (Llama Vision)
+  👁️ Load Llama 3.2 Vision ────────────────── (~10 sec)
+  └── Check ALL images vs script            (~5 min)
+  🗑️ Unload Vision ─────────────────────────── (~3 sec)
+
+  [If images need regeneration → reload FLUX → fix → unload]
+
+Phase 5b: VIDEO (LTX-2.3)
+  🎥 Load LTX-2.3 ─────────────────────────── (~15 sec)
+  └── Generate ALL video clips (60×)        (~90 min)
+  🗑️ Unload LTX ───────────────────────────── (~3 sec)
+
+Phase 5c: VOICE (Fish Speech)
+  🎙️ Load Fish Speech ─────────────────────── (~5 sec)
+  └── Narrate ALL scenes (60×)              (~10 min)
+  🗑️ Unload Fish Speech ───────────────────── (~3 sec)
+
+Phase 5d: MUSIC (MusicGen)
+  🎵 Load MusicGen ─────────────────────────── (~5 sec)
+  └── Generate 3-4 music tracks             (~10 min)
+  🗑️ Unload MusicGen ──────────────────────── (~3 sec)
+
+Phase 5e: SFX (AudioGen)
+  🔊 Load AudioGen ─────────────────────────── (~5 sec)
+  └── Generate ALL SFX                      (~5 min)
+  🗑️ Unload AudioGen ──────────────────────── (~3 sec)
+
+Phase 5f: COMPOSE (CPU — no GPU needed)
+  🎬 FFmpeg + Pillow ───────────────────────── (CPU)
+  └── Assemble final video                  (~10 min)
+
+Phase 7: FINAL QA (Qwen 72B)
+  🧠 Load Qwen 72B ──────────────────────────  (~45 sec)
+  └── Technical + content + compliance check (~10 min)
+  🗑️ Unload Qwen ──────────────────────────── (~3 sec)
+
+Phase 8: PUBLISH (FLUX for thumbnails)
+  🎨 Load FLUX ────────────────────────────── (~15 sec)
+  └── Generate 3 thumbnails                 (~2 min)
+  🗑️ Unload FLUX ──────────────────────────── (~3 sec)
+
+  📤 Upload + SRT + metadata (network only) (~5 min)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Total GPU swaps: 9 (+ ~5 min overhead)
+Total production time: ~3-3.5 hours per video
+VRAM peak: never exceeds 16GB (single model)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ```
 
 ---
@@ -768,7 +990,8 @@ ai-video-factory/
 │   │   ├── algo_tracker.py     # YouTube algorithm change detection
 │   │   └── ab_testing.py       # A/B script testing framework
 │   └── utils/
-│       ├── gpu_scheduler.py    # GPU task queue (sequential)
+│       ├── gpu_manager.py      # VRAM memory manager (load/unload/flush/monitor)
+│       ├── gpu_scheduler.py    # GPU task queue (sequential, batched by model)
 │       ├── database.py         # SQLite operations
 │       ├── telegram_bot.py     # Notifications
 │       ├── logger.py           # Logging
