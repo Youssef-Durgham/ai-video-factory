@@ -2131,12 +2131,25 @@ GPU models are swapped between sub-modules (see main.py GPU slots).
 > **Vision Model: Qwen2.5-VL 72B** (not Llama Vision 11B)
 > Reason: Arabic text understanding, complex scene analysis, much higher accuracy.
 > GPU: Runs via Ollama, same slot as Qwen text (already have 72B quantized).
+>
+> ⚠️ **CRITICAL DESIGN PRINCIPLE: Vision = Judge, NOT Source of Truth**
+> The Vision LLM is a SCORING + FLAGGING tool. It can:
+>   ✅ Score quality, detect artifacts, flag problems, add notes
+>   ❌ NOT make final pass/fail decisions alone
+> 
+> Why: Vision LLMs can hallucinate confidence, miss subtle errors,
+> or over-approve. All decisions combine Vision scores + deterministic
+> checks + script constraints + thresholds.
+>
+> For historical/political content: Vision CANNOT verify historical
+> accuracy (correct uniforms, flags, eras). That's enforced via
+> prompt engineering constraints + HistoricalContextValidator (Phase 3).
 
 ```
 Input:  Generated images + video clips + script scenes
-Output: Pass/Fail per asset → DB: scenes.image_score, scenes.video_score
-LLM:    Qwen2.5-VL 72B (via Ollama)
-GATE:   Can block, trigger regeneration, or send to Telegram for human review
+Output: Structured rubric scores per asset → DB: scenes.image_rubric (JSON), scenes.video_rubric (JSON)
+LLM:    Qwen2.5-VL 72B (via Ollama) — JUDGE role only
+GATE:   Combined score (vision + deterministic) → block, regen, or human review
 
 ═══════════════════════════════════════════════════════════════
 STAGE 6A: IMAGE ↔ SCRIPT VERIFICATION (after FLUX, before LTX)
@@ -2146,60 +2159,189 @@ Files to build:
 ├── image_script_verifier.py
 │   └── verify_image_against_script(image_path, scene) → ImageVerification
 │       
-│       Qwen2.5-VL prompt (per image):
-│       ┌──────────────────────────────────────────────────────┐
-│       │ You are a documentary video quality inspector.        │
-│       │                                                      │
-│       │ SCRIPT CONTEXT:                                      │
-│       │ - Scene #{scene_index} of {total_scenes}             │
-│       │ - Narration: "{narration_text}"                      │
-│       │ - Visual description: "{visual_prompt}"              │
-│       │ - Expected elements: {expected_elements}             │
-│       │ - Region/setting: {region}                           │
-│       │ - Emotional tone: {emotion}                          │
-│       │                                                      │
-│       │ ANALYZE THIS IMAGE:                                  │
-│       │ 1. Script Match (1-10): Does the image convey what  │
-│       │    the narration describes?                          │
-│       │ 2. Element Check: Which expected elements are        │
-│       │    present/missing?                                  │
-│       │ 3. Text Detection: Does the image contain any        │
-│       │    visible text/writing/letters? (MUST be 0)         │
-│       │ 4. Quality (1-10): Sharpness, composition, lighting │
-│       │ 5. Cultural Accuracy: Appropriate for {region}?      │
-│       │ 6. NSFW/Sensitive: Any inappropriate content?        │
-│       │ 7. Emotion Match: Does visual mood match {emotion}?  │
-│       │                                                      │
-│       │ Return JSON with all 7 scores + reasoning.           │
-│       └──────────────────────────────────────────────────────┘
+│       TWO-LAYER VERIFICATION:
+│       
+│       ┌─────────────────────────────────────────────────────────┐
+│       │ LAYER 1: DETERMINISTIC CHECKS (no LLM — runs first)    │
+│       │                                                         │
+│       │ These are hard rules — LLM opinion doesn't override:    │
+│       │ ├── OCR text detection (Tesseract/EasyOCR)              │
+│       │ │   → Any text found = AUTOMATIC FAIL                   │
+│       │ ├── NSFW classifier (NudeNet or similar, local)         │
+│       │ │   → NSFW score > 0.5 = AUTOMATIC FAIL                │
+│       │ ├── Image technical quality                              │
+│       │ │   → Resolution check, blur detection (Laplacian)      │
+│       │ │   → Black/white frame detection                        │
+│       │ ├── AI artifact detector                                 │
+│       │ │   → Extra fingers/limbs heuristic (hand region crop)  │
+│       │ │   → Face distortion check (dlib landmarks)            │
+│       │ └── File integrity (valid image, not corrupt)            │
+│       └─────────────────────────────────────────────────────────┘
+│       
+│       ┌─────────────────────────────────────────────────────────┐
+│       │ LAYER 2: VISION LLM RUBRIC (Qwen2.5-VL — judge role)  │
+│       │                                                         │
+│       │ Structured rubric — NOT a vague "score 1-10":           │
+│       │                                                         │
+│       │ RUBRIC AXES (each scored 1-10 with mandatory reasoning):│
+│       │                                                         │
+│       │ A. Semantic Match                                       │
+│       │    "Does image convey the MEANING of the narration?"    │
+│       │    Narration: "{narration_text}"                        │
+│       │    NOT asking if it's a literal match — conceptual fit. │
+│       │                                                         │
+│       │ B. Visual Element Presence                              │
+│       │    "Which expected elements are visible?"               │
+│       │    Expected: {expected_elements}                        │
+│       │    Return: {element: "present"|"absent"|"uncertain"}    │
+│       │                                                         │
+│       │ C. Composition Quality                                  │
+│       │    "Is the image well-composed for a documentary?"      │
+│       │    Lighting, framing, depth, focus, not cluttered.      │
+│       │                                                         │
+│       │ D. Style Fit                                            │
+│       │    "Does this look like a {style} documentary frame?"   │
+│       │    style = cinematic|editorial|archival|illustrated     │
+│       │                                                         │
+│       │ E. Artifact Severity                                    │
+│       │    "Rate visible AI generation artifacts"               │
+│       │    10=clean, 1=obviously AI-generated mess              │
+│       │    List specific artifacts found.                       │
+│       │                                                         │
+│       │ F. Cultural/Regional Appropriateness                    │
+│       │    "Is this visually appropriate for {region} audience?"│
+│       │    NOT historical accuracy (that's prompt engineering). │
+│       │                                                         │
+│       │ G. Emotional Tone Match                                 │
+│       │    "Does visual mood match {emotion}?"                  │
+│       │    dramatic|informative|tense|hopeful|somber            │
+│       │                                                         │
+│       │ IMPORTANT: For each axis, provide:                      │
+│       │ - Score (1-10)                                          │
+│       │ - One-line reasoning                                    │
+│       │ - Confidence level (high|medium|low)                    │
+│       │                                                         │
+│       │ If confidence = "low" on any axis → FLAG for human.    │
+│       └─────────────────────────────────────────────────────────┘
+│       
+│       ┌─────────────────────────────────────────────────────────┐
+│       │ LAYER 3: COMBINED VERDICT (deterministic formula)       │
+│       │                                                         │
+│       │ NOT the LLM's verdict — calculated from scores:         │
+│       │                                                         │
+│       │ weighted_score = (                                      │
+│       │     semantic_match * 0.25 +                             │
+│       │     element_presence * 0.20 +                           │
+│       │     composition * 0.15 +                                │
+│       │     style_fit * 0.10 +                                  │
+│       │     artifact_severity * 0.15 +                          │
+│       │     cultural * 0.05 +                                   │
+│       │     emotion * 0.10                                      │
+│       │ )                                                       │
+│       │                                                         │
+│       │ HARD FAILS (override score):                            │
+│       │ ├── deterministic_text_detected = True → FAIL           │
+│       │ ├── deterministic_nsfw = True → FAIL                    │
+│       │ ├── deterministic_corrupt = True → FAIL                 │
+│       │ ├── any axis confidence = "low" → FLAG_HUMAN            │
+│       │ └── extra_limbs/face_distortion = True → FAIL           │
+│       │                                                         │
+│       │ SOFT THRESHOLDS:                                        │
+│       │ ├── weighted_score ≥ 7.0 → PASS                        │
+│       │ ├── weighted_score 4.0-6.9 → REGEN (adjust prompt)     │
+│       │ └── weighted_score < 4.0 → REGEN (new prompt)          │
+│       └─────────────────────────────────────────────────────────┘
 │       
 │       Returns: ImageVerification(
-│           script_match: float,       # 1-10
-│           element_presence: dict,    # {element: bool}
-│           has_text: bool,            # MUST be False
-│           quality: float,            # 1-10
-│           cultural_ok: bool,
-│           nsfw_detected: bool,
-│           emotion_match: float,      # 1-10
-│           overall: float,            # weighted average
-│           reasoning: str,            # LLM explanation
-│           verdict: str               # "pass" | "regen" | "block"
+│           # Deterministic layer
+│           text_detected: bool,        # OCR result
+│           nsfw_score: float,          # classifier result
+│           blur_score: float,          # Laplacian variance
+│           artifact_flags: list[str],  # detected AI artifacts
+│           
+│           # Vision rubric (7 axes)
+│           rubric: dict[str, RubricScore],  # axis → {score, reasoning, confidence}
+│           
+│           # Combined
+│           weighted_score: float,      # calculated, NOT from LLM
+│           hard_fail: Optional[str],   # reason if hard-failed
+│           verdict: str,               # "pass" | "regen_adjust" | "regen_new" | "fail" | "flag_human"
+│           flags: list[str]            # all issues found
 │       )
 │
 ├── style_checker.py
-│   └── check_consistency(image_paths: list) → float
-│       Send ALL images to Qwen2.5-VL in one prompt:
-│       "These are scenes from the same documentary video.
-│        Score style consistency (color palette, art style, lighting): 1-10.
-│        Flag any outlier images that break visual coherence."
-│       Returns: consistency_score (0-1), outlier_indices: list
+│   └── check_consistency(image_paths: list) → StyleResult
+│       
+│       TWO-LAYER approach:
+│       
+│       LAYER 1: DETERMINISTIC (no LLM):
+│       ├── Color histogram comparison (OpenCV)
+│       │   → Extract dominant colors per image
+│       │   → Calculate pairwise histogram distance
+│       │   → Outlier = distance > 2 std deviations from mean
+│       ├── Brightness/contrast distribution
+│       │   → Flag images with drastically different exposure
+│       └── Aspect ratio / resolution consistency
+│       
+│       LAYER 2: VISION LLM (supplementary):
+│       Send ALL images to Qwen2.5-VL:
+│       "These are scenes from the same documentary.
+│        For each image, note:
+│        - Art style (photorealistic/illustrated/painted)
+│        - Color temperature (warm/cool/neutral)
+│        - Lighting style (cinematic/flat/dramatic)
+│        Which images break consistency? List them with reasons."
+│       
+│       COMBINED: deterministic outliers ∩ LLM outliers = high confidence
+│                 deterministic only = medium (still flag)
+│                 LLM only = low (note but don't fail)
+│       
+│       Returns: StyleResult(
+│           consistency_score: float,       # 0-1, from histogram analysis
+│           outlier_indices: list[int],     # combined
+│           deterministic_outliers: list,   # from histogram
+│           llm_outliers: list,             # from vision
+│           confidence: str                 # high|medium|low
+│       )
 │
 ├── sequence_checker.py
 │   └── check_flow(image_paths: list, scenes: list) → FlowResult
-│       Send images in ORDER with narration alongside:
-│       "These images play in sequence with this narration.
-│        Score visual flow (1-10). Flag any jarring transitions."
-│       Returns: FlowResult(score, jarring_transitions: list)
+│       
+│       ⚠️ HARD PROBLEM — sequence evaluation is genuinely difficult.
+│       Approach: Conservative scoring — only flag OBVIOUS breaks.
+│       
+│       LAYER 1: DETERMINISTIC:
+│       ├── Scene-to-scene color shift magnitude
+│       │   → Large shift between adjacent scenes = potential jarring cut
+│       ├── Subject continuity (if same person/place across scenes)
+│       │   → CLIP embeddings similarity between adjacent scenes
+│       └── Brightness flow (no sudden dark→bright→dark)
+│       
+│       LAYER 2: VISION LLM (conservative):
+│       Send images in ORDER, 3 at a time (sliding window):
+│       "These 3 consecutive documentary frames play in this order.
+│        Scene N-1: '{narration_n1}'
+│        Scene N:   '{narration_n}'
+│        Scene N+1: '{narration_n1}'
+│        
+│        Is the visual transition from N-1→N and N→N+1 jarring?
+│        Only flag transitions that would confuse a viewer.
+│        Minor style differences are OK for documentaries."
+│       
+│       ⚠️ Sliding window (3 images) is more reliable than
+│       sending all 15 images at once (LLM loses focus).
+│       
+│       VERDICT LOGIC:
+│       ├── Both layers agree "jarring" → FLAG (high confidence)
+│       ├── Deterministic only → NOTE (don't fail)
+│       ├── LLM only → NOTE (don't fail)
+│       └── Neither → PASS
+│       
+│       Returns: FlowResult(
+│           score: float,                    # 0-1
+│           jarring_transitions: list[tuple], # [(scene_i, scene_j, reason, confidence)]
+│           methodology: str                  # "sliding_window_3"
+│       )
 │
 ├── telegram_gallery.py     ← NEW: Send images+script to Yusif
 │   └── send_image_gallery(job_id) → None
@@ -2232,53 +2374,100 @@ Files to build:
 STAGE 6B: VIDEO CLIP ↔ SCRIPT VERIFICATION (after LTX, before voice)
 ═══════════════════════════════════════════════════════════════
 
-├── video_script_verifier.py    ← NEW: Verify LTX video clips
+├── video_script_verifier.py    ← Verify LTX video clips
 │   └── verify_video_against_script(video_path, scene) → VideoVerification
 │       
-│       Method: Extract 3-5 keyframes from each clip → send to Qwen2.5-VL
+│       Method: Extract 5 keyframes → deterministic + vision rubric
 │       
-│       Qwen2.5-VL prompt (per video clip):
-│       ┌──────────────────────────────────────────────────────┐
-│       │ You are inspecting a video clip for a documentary.    │
-│       │                                                      │
-│       │ SCRIPT CONTEXT:                                      │
-│       │ - Narration: "{narration_text}"                      │
-│       │ - Motion description: "{motion_prompt}"              │
-│       │ - Expected movement: {expected_motion}               │
-│       │ - Duration: {expected_duration}s                     │
-│       │                                                      │
-│       │ Here are {N} keyframes extracted from the clip:      │
-│       │ [Frame 1: 0.0s] [Frame 2: 1.5s] [Frame 3: 3.0s]   │
-│       │                                                      │
-│       │ ANALYZE:                                             │
-│       │ 1. Motion Quality (1-10): Smooth? Natural? Or        │
-│       │    glitchy/AI-artifact-heavy?                        │
-│       │ 2. Script Match (1-10): Does the motion match what   │
-│       │    the narration describes?                          │
-│       │ 3. Temporal Coherence (1-10): Do keyframes show a    │
-│       │    logical progression?                              │
-│       │ 4. Artifact Detection: Morphing faces? Warping       │
-│       │    objects? Flickering?                              │
-│       │ 5. Text Detection: Any text appeared in video?       │
-│       │                                                      │
-│       │ Return JSON with scores + reasoning.                 │
-│       └──────────────────────────────────────────────────────┘
+│       ┌─────────────────────────────────────────────────────────┐
+│       │ LAYER 1: DETERMINISTIC VIDEO CHECKS (no LLM)           │
+│       │                                                         │
+│       │ ├── Frame-to-frame optical flow analysis                │
+│       │ │   → Detect frozen frames (zero flow)                  │
+│       │ │   → Detect sudden jumps (flow magnitude spike)        │
+│       │ ├── Temporal consistency (SSIM between adjacent frames) │
+│       │ │   → SSIM drop > 0.3 between adjacent = glitch        │
+│       │ ├── OCR on all keyframes (text detection)               │
+│       │ │   → Any text found = AUTOMATIC FAIL                   │
+│       │ ├── Black/white/corrupt frame detection                  │
+│       │ ├── Duration check vs expected                           │
+│       │ └── FPS consistency check                                │
+│       └─────────────────────────────────────────────────────────┘
+│       
+│       ┌─────────────────────────────────────────────────────────┐
+│       │ LAYER 2: VISION RUBRIC (Qwen2.5-VL — judge role)      │
+│       │                                                         │
+│       │ Send 5 keyframes with timestamps + script context:      │
+│       │                                                         │
+│       │ RUBRIC AXES:                                            │
+│       │ A. Motion Plausibility (1-10)                           │
+│       │    "Do the keyframes show believable motion?"           │
+│       │    Smooth progression, no teleporting objects.           │
+│       │                                                         │
+│       │ B. Script Motion Match (1-10)                           │
+│       │    "Motion prompt: '{motion_prompt}'"                   │
+│       │    "Do keyframes show this type of movement?"           │
+│       │                                                         │
+│       │ C. Temporal Coherence (1-10)                            │
+│       │    "Do frames show logical time progression?"           │
+│       │    No objects appearing/disappearing between frames.    │
+│       │                                                         │
+│       │ D. AI Artifact Severity (1-10)                          │
+│       │    "List specific artifacts: morphing, warping,         │
+│       │    flickering, extra limbs, melting objects"             │
+│       │    10=clean, 1=severe artifacts                         │
+│       │                                                         │
+│       │ E. Source Image Fidelity (1-10)                         │
+│       │    "Does the video preserve the source image quality?"  │
+│       │    Or did LTX degrade/distort the original?             │
+│       │                                                         │
+│       │ Each axis: score + reasoning + confidence               │
+│       └─────────────────────────────────────────────────────────┘
+│       
+│       ┌─────────────────────────────────────────────────────────┐
+│       │ LAYER 3: COMBINED VERDICT (deterministic formula)       │
+│       │                                                         │
+│       │ weighted_score = (                                      │
+│       │     motion_plausibility * 0.25 +                        │
+│       │     script_match * 0.25 +                               │
+│       │     temporal_coherence * 0.20 +                         │
+│       │     artifact_severity * 0.20 +                          │
+│       │     source_fidelity * 0.10                              │
+│       │ )                                                       │
+│       │                                                         │
+│       │ HARD FAILS:                                             │
+│       │ ├── text_detected = True → FAIL                         │
+│       │ ├── frozen_frames > 30% → FAIL                          │
+│       │ ├── ssim_glitches > 2 → FAIL                            │
+│       │ └── any axis confidence = "low" → FLAG_HUMAN            │
+│       │                                                         │
+│       │ FALLBACK LOGIC (on FAIL):                               │
+│       │ ├── artifact_severity < 4 AND source_fidelity > 7       │
+│       │ │   → "regen_video" (retry LTX, different motion)       │
+│       │ ├── source_fidelity < 5                                 │
+│       │ │   → "regen_image" (source image was bad)              │
+│       │ ├── motion_plausibility < 4 AND 2+ retries done         │
+│       │ │   → "ken_burns" (LTX can't handle this, use fallback) │
+│       │ └── else → "regen_video" (default retry)                │
+│       └─────────────────────────────────────────────────────────┘
 │       
 │       Returns: VideoVerification(
-│           motion_quality: float,
-│           script_match: float,
-│           temporal_coherence: float,
-│           artifacts: list[str],
-│           has_text: bool,
-│           overall: float,
-│           verdict: str,          # "pass" | "regen_video" | "regen_image" | "ken_burns"
-│           reasoning: str
+│           # Deterministic
+│           text_detected: bool,
+│           frozen_frames: int,
+│           ssim_glitches: int,
+│           optical_flow_anomalies: list,
+│           
+│           # Vision rubric (5 axes)
+│           rubric: dict[str, RubricScore],
+│           
+│           # Combined
+│           weighted_score: float,
+│           hard_fail: Optional[str],
+│           verdict: str,          # "pass"|"regen_video"|"regen_image"|"ken_burns"|"flag_human"
+│           fallback_reason: str,
+│           flags: list[str]
 │       )
-│       
-│       Fallback logic:
-│       - verdict="regen_video" → retry LTX with adjusted motion prompt
-│       - verdict="regen_image" → source image was bad, go back to FLUX
-│       - verdict="ken_burns" → LTX can't do this motion, use Ken Burns instead
 │
 ├── video_keyframe_extractor.py  ← NEW
 │   └── extract_keyframes(video_path, count=5) → list[str]
@@ -2335,6 +2524,29 @@ STAGE 6B: VIDEO CLIP ↔ SCRIPT VERIFICATION (after LTX, before voice)
           f. Gate: >85% pass → continue; else → regen or block
         
         STEP 6: Unload Qwen2.5-VL
+```
+
+**⚠️ HISTORICAL/POLITICAL CONTENT — Vision Limitations:**
+```
+Vision LLM CANNOT reliably verify:
+├── Historical accuracy of clothing/uniforms/military ranks
+├── Correct flags for specific time periods  
+├── Architecture appropriate to the era
+├── Weapon/vehicle models matching the described period
+└── Cultural details specific to sub-regions
+
+These are enforced UPSTREAM, not by Vision QA:
+├── Phase 3 (Script): HistoricalContextValidator
+│   → Embeds constraints in visual_prompt: "1990s Iraqi military uniform,
+│     NOT modern, earth tones, beret, NO American-style camo"
+├── Phase 5 (FLUX): Prompt engineering
+│   → Negative prompts include era-inappropriate elements
+│   → Regional LoRA selection for cultural accuracy
+└── Phase 4 (Compliance): Flags sensitive historical topics
+    → Routes to manual review (Phase 7.5) automatically
+
+Vision QA checks: "does this look like a coherent documentary frame?"
+Vision QA does NOT check: "is this historically accurate?"
 ```
 
 **⚠️ CRITICAL: Phase 6 now runs in TWO stages with LTX in between:**

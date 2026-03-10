@@ -2437,31 +2437,66 @@ def cleanup_database():
 > 
 > **Phase 6 runs TWICE** — once for images, once for video clips.
 
+### ⚠️ Design Principles
+
+**1. Vision = Judge, NOT Source of Truth**
+The Vision LLM scores and flags — it does NOT make final pass/fail decisions alone.
+Vision LLMs can hallucinate confidence, miss subtle errors, or over-approve.
+All decisions combine: **Vision rubric scores + deterministic checks + calculated thresholds.**
+
+**2. Structured Rubric, NOT vague pass/fail**
+Every image/video scored on specific axes (semantic match, composition, artifacts, style, emotion...)
+with per-axis confidence levels. Low confidence on ANY axis = flag for human review.
+
+**3. Vision CANNOT verify historical accuracy**
+For documentary/political content, Vision can say "this looks like a documentary frame"
+but CANNOT reliably verify correct uniforms, flags, military ranks, or era-appropriate details.
+Historical accuracy is enforced **upstream**:
+- Phase 3: `HistoricalContextValidator` embeds constraints in visual prompts
+- Phase 5: Prompt engineering with era-specific negative prompts
+- Phase 4: Sensitive topics → auto-route to manual review (Phase 7.5)
+
+**4. Sequence checking = conservative**
+Evaluating visual flow across scenes is genuinely hard. Approach: only flag **OBVIOUS** breaks
+with high confidence. Use sliding windows (3 images at a time), not all-at-once.
+Better to miss a subtle issue than give false confidence.
+
 ### Stage 6A: Image ↔ Script Verification (after FLUX, before LTX)
 
-#### 6A.1 Image-Script Deep Analysis
-- **Qwen2.5-VL 72B** analyzes each image with FULL script context:
-  - Scene narration text alongside the image
-  - Expected visual elements checklist
-  - Region/cultural accuracy (Iraq, Gulf, Egypt, etc.)
-  - Emotional tone match (dramatic, informative, tense)
-  - **Text detection** — images MUST contain zero text
-  - Quality scoring (sharpness, composition, lighting)
-- **7-dimension scoring** per image (see ARCHITECTURE.md §Phase 6 for full prompt)
-- **Scoring:**
-  - Overall ≥ 7 → PASS
-  - Overall 4-6 → regenerate with adjusted prompt (1 retry)
-  - Overall < 4 → regenerate with new prompt (1 retry)
-  - has_text = true → AUTOMATIC FAIL + regen (zero tolerance)
+#### 6A.1 Two-Layer Image Verification
 
-#### 6A.2 Style Consistency Check
-- ALL images sent to Qwen2.5-VL in one prompt
-- Checks: color palette, art style, lighting consistency across entire video
-- Flags outlier images that break visual coherence
+**Layer 1: Deterministic Checks (no LLM — hard rules):**
+- OCR text detection (Tesseract/EasyOCR) → any text = AUTOMATIC FAIL
+- NSFW classifier (NudeNet, local) → score > 0.5 = AUTOMATIC FAIL
+- Blur detection (Laplacian variance) → below threshold = FAIL
+- AI artifact detector (extra fingers/limbs, face distortion via dlib)
+- Black/white/corrupt frame detection
+- File integrity check
 
-#### 6A.3 Sequence Flow Check
-- Images viewed in order with narration alongside
-- Checks: visual story flows logically, no jarring jumps
+**Layer 2: Vision LLM Rubric (Qwen2.5-VL — 7 axes):**
+- **A. Semantic Match** (1-10): Does image convey the MEANING of the narration?
+- **B. Visual Element Presence**: Which expected elements are present/absent/uncertain?
+- **C. Composition Quality** (1-10): Well-composed for documentary?
+- **D. Style Fit** (1-10): Matches the target style (cinematic/editorial/archival)?
+- **E. Artifact Severity** (1-10): Visible AI generation artifacts?
+- **F. Cultural Appropriateness** (1-10): Appropriate for target region audience?
+- **G. Emotional Tone Match** (1-10): Visual mood matches scene emotion?
+- Each axis includes: score + one-line reasoning + confidence (high/medium/low)
+
+**Layer 3: Combined Verdict (deterministic formula, NOT LLM opinion):**
+- Weighted score = semantic(0.25) + elements(0.20) + composition(0.15) + style(0.10) + artifacts(0.15) + cultural(0.05) + emotion(0.10)
+- Hard fails override: text detected, NSFW, corrupt, extra limbs, any axis confidence="low"
+- Thresholds: ≥7.0 PASS, 4.0-6.9 regen with adjustment, <4.0 regen with new prompt
+
+#### 6A.2 Style Consistency Check (Two-Layer)
+- **Deterministic:** Color histogram comparison (OpenCV), brightness/contrast distribution, pairwise distance → outlier = >2 std deviations
+- **Vision LLM:** All images sent to Qwen2.5-VL — note art style, color temperature, lighting per image, flag breaks
+- **Combined:** Both layers agree = high confidence flag; deterministic only = medium; LLM only = note (don't fail)
+
+#### 6A.3 Sequence Flow Check (Conservative)
+- **Deterministic:** Scene-to-scene color shift magnitude, CLIP embeddings similarity, brightness flow
+- **Vision LLM:** Sliding window of 3 consecutive images + narration — only flag OBVIOUS jarring transitions
+- **⚠️ Conservative by design:** Only flag high-confidence breaks. Better to miss a subtle issue than give false confidence that "sequence is perfect"
 
 #### 6A.4 Telegram Image Gallery 📱
 - **Every image sent to Yusif** via Telegram album with:
@@ -2477,18 +2512,30 @@ IF <70% pass → BLOCK + alert Yusif
 
 ### Stage 6B: Video Clip ↔ Script Verification (after LTX, before voice)
 
-#### 6B.1 Video Clip Deep Analysis
-- **Extract 3-5 keyframes** from each LTX clip (FFmpeg)
-- **Qwen2.5-VL 72B** analyzes keyframes with script context:
-  - Motion quality — smooth or glitchy/AI artifacts?
-  - Script match — does the motion convey the narration?
-  - Temporal coherence — do keyframes show logical progression?
-  - Artifact detection — morphing faces, warping objects, flickering
-  - Text detection — no text should appear in video
-- **Fallback logic:**
-  - verdict = "regen_video" → retry LTX with different motion prompt
-  - verdict = "regen_image" → source image was bad, go back to FLUX
-  - verdict = "ken_burns" → LTX can't handle this motion, use Ken Burns
+#### 6B.1 Two-Layer Video Clip Verification
+
+**Layer 1: Deterministic Video Checks (no LLM):**
+- Frame-to-frame optical flow → detect frozen frames (zero flow) and sudden jumps
+- Temporal consistency (SSIM between adjacent frames) → SSIM drop > 0.3 = glitch
+- OCR on all keyframes → any text = AUTOMATIC FAIL
+- Black/white/corrupt frame detection
+- Duration check vs expected, FPS consistency
+
+**Layer 2: Vision LLM Rubric (Qwen2.5-VL — 5 axes on keyframes):**
+- **A. Motion Plausibility** (1-10): Do keyframes show believable motion?
+- **B. Script Motion Match** (1-10): Does movement match the motion prompt?
+- **C. Temporal Coherence** (1-10): Logical time progression? No teleporting objects?
+- **D. AI Artifact Severity** (1-10): Morphing, warping, flickering, melting?
+- **E. Source Image Fidelity** (1-10): Did LTX preserve or degrade the source image?
+- Each axis: score + reasoning + confidence level
+
+**Layer 3: Combined Verdict + Fallback Logic:**
+- Weighted formula: motion(0.25) + script(0.25) + temporal(0.20) + artifacts(0.20) + fidelity(0.10)
+- Hard fails: text detected, >30% frozen frames, >2 SSIM glitches
+- **Fallback logic** (on FAIL):
+  - artifacts bad BUT source good → "regen_video" (retry LTX, different motion)
+  - source fidelity bad → "regen_image" (go back to FLUX)
+  - motion keeps failing after 2 retries → "ken_burns" (LTX can't do this)
 
 #### 6B.2 Telegram Video Gallery 📱
 - **Every video clip sent to Yusif** via Telegram with:
