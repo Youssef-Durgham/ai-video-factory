@@ -19,11 +19,21 @@ Trends           SEO Analysis     Engine           Compliance
                                                       │
                                                   PASS ▼ FAIL → fix/block
                                                       │
-PHASE 8          PHASE 7          PHASE 6          PHASE 5
-Publish     ◀─── QA: Final  ◀─── QA: Visual  ◀─── Production
-Engine           Video Check      Verify           Engine
+                 PHASE 7.5        PHASE 7          PHASE 6          PHASE 5
+PHASE 8     ◀── Manual    ◀──── QA: Final  ◀─── QA: Visual  ◀─── Production
+Publish          Review          Video Check      Verify           Engine
+   │            (Optional)
+   │
+   ▼
+PHASE 9: Performance Intelligence
+   │  Analyzes: CTR, watch time, retention, revenue
+   │
+   └──▶ Feeds back to: Phase 1 (topics), Phase 2 (SEO), Phase 3 (scripts),
+                        Phase 5 (visuals), Phase 8 (thumbnails, posting time)
 
 COMPLIANCE AGENT gates Phase 4 + 6 + 7 — can BLOCK and alert user
+MANUAL REVIEW (Phase 7.5) — optional human gate before publish
+PERFORMANCE LOOP (Phase 9) — continuous learning from published videos
 ```
 
 ### Phase Summary
@@ -37,7 +47,9 @@ COMPLIANCE AGENT gates Phase 4 + 6 + 7 — can BLOCK and alert user
 | 5 | Production Engine | Generate images, videos, voice, music, SFX, compose | — |
 | 6 | **QA: Visual Verification** | Verify generated images match script before video generation | ✅ GATE |
 | 7 | **QA: Final Video Check** | Verify FFmpeg composed correctly — A/V sync, duration, quality | ✅ GATE |
+| 7.5 | **Manual Review (Optional)** | Yusif reviews video before publish — can approve/reject/edit | ✅ GATE |
 | 8 | Publishing Engine | Thumbnail, SEO metadata, YouTube upload, scheduling | — |
+| 9 | **Performance Intelligence** | Analyze CTR, watch time, retention → feed back to all phases | 🔄 LOOP |
 
 ---
 
@@ -49,20 +61,38 @@ Find trending topics across YouTube, news, social media — and present them to 
 ### Components
 
 #### 1.1 YouTube Trend Scanner
-- **YouTube Trending API:** What's trending in Arabic YouTube right now
-- **YouTube Search:** Most-viewed recent videos by category
-- **Competitor Analysis:** What are top Arabic documentary/news channels posting about?
-  - Track 20-50 competitor channels
+- **⚠️ OFFICIAL APIs ONLY — No scraping, no unofficial endpoints**
+- **YouTube Data API v3 (official, quota: 10,000 units/day):**
+  - `videos.list` (chart=mostPopular, regionCode=IQ/SA/EG) — trending videos
+  - `search.list` (order=viewCount, publishedAfter=7d) — most-viewed recent by category
+  - `channels.list` + `search.list` — competitor channel analysis
+- **Competitor Analysis (via official API):**
+  - Track 20-50 competitor channels by channel ID
   - What topics got the most views in the last 7 days?
   - What topics are getting sudden view spikes?
+- **API Quota Management:**
+  ```
+  Budget per daily run:
+  - Trending fetch: ~200 units (2 regions × 50 results)
+  - Competitor scan: ~2000 units (50 channels × search)
+  - Keyword research (Phase 2): ~3000 units
+  - Upload + metadata: ~1600 units
+  - Reserve: ~3200 units
+  Total: ~10,000 units/day (fits free quota)
+  ```
+- **Caching:** Cache results for 6 hours — don't re-fetch same data
 - **Output:** Top trending YouTube topics with view counts
+- **🚫 NEVER use:** YouTube internal APIs, scraping, browser automation for data extraction
+- **Risk mitigation:** If quota exceeded → use cached data + Google Trends only
 
 #### 1.2 Web & News Trend Scanner
-- **Sources:**
-  - Google Trends API (Arabic regions: Iraq, Saudi, Egypt, UAE, Morocco)
-  - Twitter/X trending hashtags (Arabic)
-  - Reddit trending (r/worldnews, r/science, r/todayilearned)
-  - News RSS feeds (Al Jazeera, BBC Arabic, Reuters Arabic, Sky News Arabia)
+- **Sources (all official/public):**
+  - Google Trends API via `pytrends` (Arabic regions: Iraq, Saudi, Egypt, UAE, Morocco)
+  - Twitter/X API v2 (**official paid tier**, or skip if no API access)
+  - Reddit API (**official**, r/worldnews, r/science, r/todayilearned)
+  - News RSS feeds (Al Jazeera, BBC Arabic, Reuters Arabic, Sky News Arabia) — **public, no API needed**
+  - Google News RSS — public feeds by topic/region
+- **⚠️ No scraping:** If a platform doesn't have official API access → skip it, don't scrape
 - **Output:** Top trending web topics with search volume
 
 #### 1.3 Topic Ranker
@@ -81,11 +111,13 @@ Find trending topics across YouTube, news, social media — and present them to 
 - Stores selection in job queue
 
 ### Tech Stack
-- `pytrends` (Google Trends)
-- YouTube Data API v3 (trending + search)
-- Twitter API v2 or scraping
-- `feedparser` (RSS)
+- `pytrends` (Google Trends — unofficial but widely used, low risk)
+- YouTube Data API v3 (official — trending + search + channels)
+- Twitter/X API v2 (official paid tier — or skip)
+- Reddit API (official — `praw` library)
+- `feedparser` (RSS — public feeds, zero risk)
 - LLM for summarization and angle suggestion
+- **🚫 No scraping, no unofficial APIs, no browser automation for data**
 
 ---
 
@@ -138,10 +170,10 @@ BEFORE writing the script — research the best keywords, title style, and tags 
 - **Output:** Unique angle recommendation
 
 ### Tech Stack
-- YouTube Data API v3
-- YouTube Search Suggest (unofficial endpoint)
+- YouTube Data API v3 (official — search, videos, channels endpoints)
+- **⚠️ YouTube Search Suggest:** semi-official autocomplete endpoint (widely used, low risk — but monitor for changes)
 - LLM for title generation and analysis
-- `yt-dlp` for metadata extraction
+- `yt-dlp` for metadata extraction (**open-source, used for public video metadata only — not downloading copyrighted content**)
 
 ---
 
@@ -257,7 +289,75 @@ Write a complete, reviewed, fact-checked script divided into timed scenes. Uses 
 - Dates, names, statistics → must be verified
 - **Output:** Fact-check report with confidence scores
 
-#### 4.4 Arabic Quality Check
+#### 4.4 YouTube AI Content Policy Compliance ⚠️
+- **Problem:** YouTube may classify AI-generated videos as "reused/low-effort content" → limited ads or removal
+- **YouTube's criteria for LOW EFFORT:**
+  - ❌ AI images with no narration (slideshow)
+  - ❌ Generic AI narration with no personality/insight
+  - ❌ No original commentary, analysis, or perspective
+  - ❌ Repetitive visual patterns (same style every frame)
+  - ❌ No storytelling structure (just facts listed)
+- **Our defense layers (what makes our content HIGH EFFORT):**
+  ```
+  ✅ Layer 1: STRONG NARRATION
+     - Not just reading facts — emotional arc, rhetorical questions,
+       dramatic pacing, personal analysis, "لكن هل تساءلتم...؟"
+     - Voice emotion varies per scene (Feature 30)
+     - Script reviewer specifically checks for "original insight"
+  
+  ✅ Layer 2: REAL STORYTELLING
+     - Narrative styles (Feature 35): investigative, storytelling, debate
+     - Not a list of facts — a STORY with beginning, conflict, resolution
+     - Script must have: hook, tension, reveal, reflection
+     - Emotional arc engine (Feature 29) enforces this
+  
+  ✅ Layer 3: VISUAL VARIETY
+     - Mix of: AI images, AI video, text overlays, data visualizations
+     - Camera movements vary (zoom, pan, parallax — not just static)
+     - Style variations within video (not 60 identical-looking scenes)
+     - AI Presenter (Feature 32) adds human presence
+  
+  ✅ Layer 4: PRODUCTION VALUE
+     - Cinematic sound design (Feature 31): 6 audio layers
+     - Professional text overlays with animations
+     - Intro/outro branding
+     - Chapter markers, timestamps
+     - Arabic subtitles (SRT)
+  
+  ✅ Layer 5: DISCLOSURE & TRANSPARENCY
+     - YouTube AI disclosure label (REQUIRED)
+     - Description includes: "تم إنشاء هذا المحتوى بمساعدة الذكاء الاصطناعي"
+     - Sources cited in description
+     - This satisfies YouTube's AI content policy
+  ```
+- **Compliance check (added to Phase 4):**
+  ```python
+  def check_ai_content_quality(script, scenes):
+      score = 0
+      
+      # Original insight check
+      if has_original_analysis(script):     score += 2
+      if has_rhetorical_questions(script):  score += 1
+      if has_personal_perspective(script):  score += 2
+      
+      # Storytelling check
+      if has_emotional_arc(script):         score += 2
+      if has_narrative_structure(script):   score += 1
+      
+      # Visual variety
+      unique_styles = count_unique_visual_styles(scenes)
+      if unique_styles >= 3:               score += 1
+      
+      # Production value
+      if has_text_overlays(scenes):         score += 1
+      
+      # Score: 0-10
+      if score >= 7:  return "PASS — high-effort content"
+      if score >= 4:  return "WARN — add more original analysis"
+      return "BLOCK — too generic, YouTube may flag as low-effort"
+  ```
+
+#### 4.5 Arabic Quality Check
 - MSA (Modern Standard Arabic) consistency
 - No dialect mixing (unless intentional)
 - Grammar validation
@@ -1101,7 +1201,8 @@ CREATE TABLE jobs (
     id TEXT PRIMARY KEY,                    -- "job_20260310_001"
     status TEXT NOT NULL DEFAULT 'pending', -- pending → research → seo → script → compliance → 
                                            -- images → visual_qa → video → voice → music → sfx →
-                                           -- compose → final_qa → publish → published → tracking
+                                           -- compose → final_qa → manual_review → publish → 
+                                           -- published → tracking_24h → tracking_7d → tracking_30d
     channel_id TEXT NOT NULL,               -- "documentary_ar"
     topic TEXT,                             -- "انهيار فنزويلا"
     topic_source TEXT,                      -- "trend_scanner" | "calendar" | "manual" | "trending_hijack"
@@ -1117,7 +1218,9 @@ CREATE TABLE jobs (
     phase5_completed_at TIMESTAMP,
     phase6_completed_at TIMESTAMP,
     phase7_completed_at TIMESTAMP,
+    phase7_5_completed_at TIMESTAMP,        -- Manual review
     phase8_completed_at TIMESTAMP,
+    phase9_last_analysis TIMESTAMP,         -- Performance intelligence
     
     -- Phase retry counts
     script_revisions INTEGER DEFAULT 0,     -- How many times script was revised (max 3)
@@ -1129,6 +1232,12 @@ CREATE TABLE jobs (
     blocked_reason TEXT,
     blocked_phase TEXT,                      -- "phase4" | "phase6" | "phase7"
     resolved_at TIMESTAMP,
+    
+    -- Manual review (Phase 7.5)
+    manual_review_required BOOLEAN DEFAULT FALSE,
+    manual_review_status TEXT,              -- "pending" | "approved" | "rejected" | "reprocess"
+    manual_review_notes TEXT,
+    manual_review_at TIMESTAMP,
     
     -- Final output
     youtube_video_id TEXT,
@@ -1716,6 +1825,29 @@ CREATE INDEX idx_revenue_date ON revenue(date);
 CREATE INDEX idx_revenue_channel ON revenue(channel_id);
 ```
 
+#### `performance_rules` — Phase 9 auto-learned rules
+```sql
+CREATE TABLE performance_rules (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    rule_name TEXT UNIQUE,              -- "intro_max_sec"
+    rule_value TEXT,                    -- "20"
+    rule_type TEXT,                     -- "script" | "visual" | "audio" | "publish" | "thumbnail"
+    confidence FLOAT,                   -- 0-1 (based on sample size)
+    sample_size INTEGER,                -- How many videos contributed
+    reason TEXT,                        -- "Intros >20s lose 15% viewers"
+    applies_to_channel TEXT,            -- NULL = all channels
+    
+    -- Source data
+    discovery_date DATE,
+    based_on_metric TEXT,               -- "retention" | "ctr" | "watch_time" | "revenue"
+    metric_improvement_pct FLOAT,       -- "+15%"
+    
+    active BOOLEAN DEFAULT TRUE,
+    superseded_by INTEGER REFERENCES performance_rules(id),  -- Newer rule replaced this
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+```
+
 #### `algorithm_signals` — YouTube algorithm tracking (Feature 39)
 ```sql
 CREATE TABLE algorithm_signals (
@@ -2047,6 +2179,298 @@ Optimize and publish videos to YouTube with maximum discoverability.
 
 ---
 
+## Phase 7.5: Manual Review Gate (Optional) ✅👤 HUMAN GATE
+
+### Purpose
+**Optional human checkpoint before publishing.** Prevents weak videos from going live and damaging channel reputation.
+
+### Configuration
+```yaml
+manual_review:
+  enabled: true                    # Global toggle
+  mode: "selective"                # "all" | "selective" | "off"
+  
+  # Selective mode rules:
+  auto_publish_if:
+    - all_qa_scores_above: 8       # Phase 4 + 6 + 7 all scored 8+
+    - channel_has_published: 20    # Channel already has 20+ successful videos
+    - topic_is_not: "politics"     # Non-sensitive topic
+    
+  require_review_if:
+    - any_qa_score_below: 7        # Any QA gate scored below 7
+    - topic_category: "politics"   # Sensitive topics always need review
+    - first_video_on_channel: true # First 10 videos on any new channel
+    - trending_hijack: true        # Fast-tracked content
+    - new_narrative_style: true    # First time using a new style
+```
+
+### Review Flow
+```
+Phase 7 (Final QA) PASSES
+         │
+         ▼
+   ┌─────────────┐
+   │ Auto-publish │──── YES ───▶ Phase 8 (Publish)
+   │  criteria    │
+   │    met?      │
+   └──────┬──────┘
+          │ NO
+          ▼
+   ┌─────────────────────────────────────────────────┐
+   │  📱 TELEGRAM REVIEW REQUEST                      │
+   │                                                   │
+   │  🎬 Video: "لغز انهيار فنزويلا"                  │
+   │  📺 Channel: documentary_ar                       │
+   │  ⏱️ Duration: 11:24                               │
+   │  📊 QA Scores: Script 8.5 | Visual 7.2 | Final 8.0│
+   │  ⚠️ Flag: Visual QA slightly low                  │
+   │                                                   │
+   │  📎 [Watch Preview]  — private YouTube link        │
+   │  📄 [Read Script]    — full script text            │
+   │  🖼️ [See Thumbnails] — 3 thumbnail options         │
+   │                                                   │
+   │  [✅ Approve & Publish]                            │
+   │  [✏️ Approve with Notes] — "fix scene 23 image"    │
+   │  [🔄 Reprocess] — re-run specific phase            │
+   │  [❌ Reject] — cancel this video                   │
+   └─────────────────────────────────────────────────┘
+```
+
+### Review Actions
+| Action | Result |
+|--------|--------|
+| ✅ Approve | → Phase 8 publishes immediately |
+| ✏️ Approve with Notes | → Agent fixes noted issues → re-QA → auto-publish |
+| 🔄 Reprocess Phase X | → Re-runs specified phase (e.g., "regenerate scene 23 image") |
+| ❌ Reject | → Job cancelled, reason logged, topic freed for retry |
+
+### Review Timeout
+```
+IF no response in 12 hours:
+  → Send reminder: "⏰ Video waiting for review since 12h"
+IF no response in 24 hours:
+  → Auto-action based on config:
+    - "auto_publish" — publish anyway (for high-scoring videos)
+    - "hold" — keep waiting (for sensitive content)
+    - "cancel" — cancel the job
+```
+
+### Preview System
+- **Private YouTube upload:** Video uploaded as `unlisted` for Yusif to watch
+  - Also serves as Content ID pre-check (Feature 5.4.1 Layer 4)
+  - If approved → change visibility to public/scheduled
+  - If rejected → delete unlisted video
+- **Script preview:** Full script text sent via Telegram (or link to file)
+- **Thumbnail preview:** 3 options sent as images via Telegram
+
+---
+
+## Phase 9: Performance Intelligence 🔄📊
+
+### Purpose
+**The learning engine.** Analyzes every published video's performance and feeds insights back to improve ALL future videos. This is what separates a static factory from an evolving, self-improving system.
+
+### Trigger
+- Runs automatically after each video at: **24h, 48h, 7 days, 30 days, 90 days**
+- Weekly summary report every Sunday
+- Monthly deep analysis on 1st of each month
+
+### Components
+
+#### 9.1 CTR Analyzer
+- **Tracks:** Impressions → Clicks → CTR for every video
+- **Analysis:**
+  ```
+  Per-video CTR breakdown:
+  ├── Title effectiveness: which power words correlate with high CTR?
+  ├── Thumbnail effectiveness: which styles/colors/compositions win?
+  ├── Posting time effect: does 6PM get better CTR than 10AM?
+  └── Topic category: which categories get highest CTR?
+  
+  Discovery:
+  "عناوين تبدأ بـ 'لماذا' تحقق CTR أعلى بـ 23% من 'كيف'"
+  "Thumbnails مع وجوه بشرية → CTR +18%"
+  "النشر الخميس 6PM → CTR أعلى بـ 15% من الأحد"
+  ```
+- **Feeds back to:**
+  - Phase 2 (Title Generator): prioritize high-CTR word patterns
+  - Phase 8 (Thumbnail): generate styles that historically win
+  - Phase 8 (Publisher): schedule at optimal times
+
+#### 9.2 Watch Time Analyzer
+- **Tracks:** Average view duration, total watch hours
+- **Analysis:**
+  ```
+  Per-video watch time breakdown:
+  ├── Avg view duration vs video length → "12-min videos watched avg 7.2 min (60%)"
+  ├── Optimal length by category: "politics: 10 min, documentary: 14 min"
+  ├── Correlation: narration speed ↔ watch time
+  └── Correlation: music intensity ↔ watch time
+  
+  Discovery:
+  "فيديوهات 12-14 دقيقة تحقق أعلى watch time إجمالي"
+  "سرعة الصوت 0.95x تحقق +8% watch time مقابل 1.0x"
+  ```
+- **Feeds back to:**
+  - Phase 3 (Script Writer): adjust target length per category
+  - Feature 37 (Dynamic Length): data-driven length decisions
+  - Feature 30 (Voice Emotion): optimal narration speed
+
+#### 9.3 Audience Retention Analyzer (الأهم)
+- **Tracks:** Second-by-second retention curve for every video
+- **Analysis:**
+  ```
+  Retention curve analysis:
+  ├── Drop-off points: WHERE do viewers leave?
+  │   ├── Map drop-off timestamp → scene_index → scene content
+  │   ├── "Viewers drop 12% at scene 15 (2:45) — long explanation, no visual change"
+  │   └── "Viewers drop 8% at 5:30 — mid-roll ad placement too aggressive"
+  │
+  ├── Retention spikes: WHERE do viewers replay?
+  │   ├── "Spike at 4:20 — dramatic reveal moment"
+  │   └── "Spike at 0:05 — hook is so good people replay it"
+  │
+  ├── Hook effectiveness: % retained after 30 seconds
+  │   ├── "Question hooks retain 82% at 30s"
+  │   ├── "Shocking fact hooks retain 78% at 30s"
+  │   └── "Narrative hooks retain 71% at 30s"
+  │
+  └── Section-level retention:
+      ├── "Intro sections: avg 85% retention"
+      ├── "Explanation sections: avg 62% retention (PROBLEM)"
+      ├── "Reveal sections: avg 88% retention (BEST)"
+      └── "Conclusion: avg 70% retention"
+  ```
+- **Auto-generated rules (stored in DB → fed to Script Writer):**
+  ```python
+  retention_rules = [
+      {"rule": "intro_max_sec", "value": 20, "reason": "Intros >20s lose 15% viewers"},
+      {"rule": "visual_change_max_sec", "value": 10, "reason": "No visual change >10s → drop-off"},
+      {"rule": "question_every_min", "value": 2.5, "reason": "Rhetorical Q every 2.5 min retains +12%"},
+      {"rule": "explanation_max_sec", "value": 45, "reason": "Explanations >45s lose viewers — break with visual"},
+      {"rule": "midroll_not_before_sec", "value": 180, "reason": "Ads before 3:00 → 20% viewer loss"},
+      {"rule": "midroll_after_cliffhanger", "value": True, "reason": "Ads after cliffhanger → only 5% loss"},
+  ]
+  ```
+- **Feeds back to:**
+  - Phase 3 (Script Writer): avoid patterns that cause drop-offs
+  - Feature 29 (Emotional Arc): reinforce patterns that spike retention
+  - Feature 19 (Ad Placement): optimize mid-roll positions
+  - Feature 24 (Template Evolution): build templates from best-retaining scripts
+
+#### 9.4 Revenue Intelligence
+- **Tracks:** RPM, CPM, total revenue per video/channel/topic
+- **Analysis:**
+  ```
+  Revenue patterns:
+  ├── RPM by topic: "Technology $3.20 > Documentary $2.40 > Politics $1.80"
+  ├── RPM by length: "12+ min = $2.80 RPM vs 8 min = $1.90 RPM (+47%)"
+  ├── RPM by day: "Thursday-Saturday = highest RPM"
+  ├── RPM by season: "Q4 (Oct-Dec) = 2x RPM vs Q1"
+  └── Mid-roll revenue: "4 mid-rolls = optimal (3 = -20%, 5 = viewers leave)"
+  ```
+- **Feeds back to:**
+  - Phase 1 (Topic Ranker): bonus score for high-RPM topics
+  - Feature 37 (Dynamic Length): prefer lengths with higher RPM
+  - Phase 8 (Publisher): schedule high-value videos for high-RPM days/seasons
+
+#### 9.5 Cross-Video Learning
+- **Pattern mining across ALL published videos:**
+  ```
+  After 50+ videos, agent discovers:
+  
+  "Videos with these traits perform in top 20%:"
+  ├── Hook type: shocking_fact + rhetorical_question combo
+  ├── Length: 11-13 minutes
+  ├── Sections: 4 (not 3, not 5)
+  ├── Narration speed: 0.95x
+  ├── Music: dramatic in intro, calm in middle, epic at reveal
+  ├── Visual: photorealistic style, dark palette
+  ├── Posting: Thursday 5-7 PM
+  └── Thumbnail: face + 3 Arabic words + red accent color
+  
+  "Videos with these traits perform in bottom 20%:"
+  ├── Hook type: slow narrative start
+  ├── Length: >16 minutes
+  ├── Flat emotional arc (no peaks)
+  ├── Narration speed: 1.1x+ (too fast)
+  └── Thumbnail: no text, abstract image
+  ```
+- **Auto-updates:**
+  - Script templates (Feature 24)
+  - Anti-repetition rules (Feature 18)
+  - Thumbnail generator prompts
+  - Channel-specific guidelines
+
+#### 9.6 Weekly & Monthly Reports
+- **Weekly report (Telegram):**
+  ```
+  📊 Weekly Report — documentary_ar
+  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  Videos published: 7
+  Total views: 125,000
+  Total watch hours: 4,200
+  Revenue: $310
+  Best performer: "لغز انهيار فنزويلا" (45K views, CTR 8.2%)
+  Worst performer: "اقتصاد الأرجنتين" (8K views, CTR 3.1%)
+  
+  🔍 Insights:
+  • CTR improved +12% this week (better thumbnails)
+  • Avg retention dropped 3% — explanations too long in 3 videos
+  • Thursday 6PM posts outperformed Sunday 10AM by 40%
+  
+  🎯 Recommendations:
+  • Shorten explanation sections to <40 seconds
+  • Keep posting at Thu/Fri 6PM
+  • Topic "conspiracy/mystery" category trending — consider more
+  ```
+- **Monthly deep analysis:**
+  - Full revenue breakdown
+  - Audience growth analysis
+  - Competitor comparison
+  - Algorithm health check
+  - Template evolution recommendations
+  - Next month's optimal strategy
+
+### Phase 9 Pipeline Integration
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    PHASE 9: FEEDBACK LOOP                       │
+│                                                                 │
+│  YouTube Analytics API (official) → pulls data every 24h        │
+│         │                                                       │
+│         ▼                                                       │
+│  ┌─────────────┐  ┌──────────────┐  ┌──────────────┐          │
+│  │ CTR Analyzer │  │ Watch Time   │  │ Retention    │          │
+│  │             │  │ Analyzer     │  │ Analyzer     │          │
+│  └──────┬──────┘  └──────┬───────┘  └──────┬───────┘          │
+│         │                │                  │                   │
+│         ▼                ▼                  ▼                   │
+│  ┌─────────────────────────────────────────────────┐           │
+│  │         Cross-Video Learning Engine              │           │
+│  │  (analyzes patterns across ALL published videos) │           │
+│  └──────────────────────┬──────────────────────────┘           │
+│                         │                                       │
+│         ┌───────────────┼───────────────────┐                  │
+│         ▼               ▼                   ▼                  │
+│  ┌────────────┐  ┌────────────┐  ┌──────────────┐            │
+│  │ Phase 1    │  │ Phase 2    │  │ Phase 3      │            │
+│  │ Topic      │  │ Title/SEO  │  │ Script       │            │
+│  │ Selection  │  │ Patterns   │  │ Templates    │            │
+│  │ (RPM bonus)│  │ (CTR data) │  │ (retention)  │            │
+│  └────────────┘  └────────────┘  └──────────────┘            │
+│         ┌───────────────┼───────────────────┐                  │
+│         ▼               ▼                   ▼                  │
+│  ┌────────────┐  ┌────────────┐  ┌──────────────┐            │
+│  │ Phase 5    │  │ Phase 8    │  │ Feature 19   │            │
+│  │ Visual     │  │ Thumbnails │  │ Ad Placement │            │
+│  │ Style      │  │ + Schedule │  │ Optimization │            │
+│  └────────────┘  └────────────┘  └──────────────┘            │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+---
+
 ## Channel Configuration
 
 ### Structure
@@ -2253,7 +2677,15 @@ ai-video-factory/
 │   │   ├── dynamic_length.py   # Optimal video length calculator
 │   │   ├── brand_kit.py        # Brand identity management + versioning
 │   │   ├── algo_tracker.py     # YouTube algorithm change detection
-│   │   └── ab_testing.py       # A/B script testing framework
+│   │   ├── ab_testing.py       # A/B script testing framework
+│   │   └── manual_review.py   # Human review gate (Telegram interactive)
+│   ├── phase9_intelligence/
+│   │   ├── ctr_analyzer.py     # CTR pattern analysis
+│   │   ├── watchtime_analyzer.py # Watch time optimization
+│   │   ├── retention_analyzer.py # Second-by-second retention analysis
+│   │   ├── revenue_intel.py    # Revenue pattern discovery
+│   │   ├── cross_video.py      # Cross-video pattern mining
+│   │   └── reporter.py         # Weekly/monthly report generation
 │   └── utils/
 │       ├── gpu_logger.py       # Precision GPU logging (every load/unload/gen/OOM/leak)
 │       ├── gpu_manager.py      # VRAM memory manager (load/unload/flush/monitor)
@@ -2344,18 +2776,28 @@ ai-video-factory/
        ✅ PASS → continue
        ❌ FAIL → auto-fix or alert Yusif
 
-09:55  ═══ PHASE 8: PUBLISH ═══
-       Generate 3 thumbnails → pick best
+09:55  ═══ PHASE 7.5: MANUAL REVIEW (if required) ═══
+       Send preview to Yusif via Telegram
+       [✅ Approve] [✏️ Fix] [🔄 Reprocess] [❌ Reject]
+       Auto-publish if QA scores all 8+ and topic is non-sensitive
+
+10:00  ═══ PHASE 8: PUBLISH ═══
+       Generate 3 thumbnails → A/B test on YouTube
        Assemble SEO metadata (title + desc + tags)
+       Upload SRT subtitles (Arabic + English)
        Upload to YouTube (scheduled for optimal time)
        Send confirmation to Yusif via Telegram
        "✅ [channel] — [title] — scheduled for 18:00"
 
 18:00  Video goes live
 
-NEXT DAY:
-       Performance Tracker → analytics report to Yusif
-       Feed data back to improve Phases 2, 3, 8
+       ═══ PHASE 9: PERFORMANCE INTELLIGENCE (continuous) ═══
++24h   Pull analytics: views, CTR, retention curve
++48h   Pull analytics: watch time, engagement
++7d    Deep analysis: retention drop-offs, revenue, audience
++30d   Full report: cross-video patterns, template updates
+       Feed ALL data back → Phase 1 (topics), Phase 2 (SEO),
+       Phase 3 (scripts), Phase 8 (thumbnails, schedule)
 ```
 
 ---
