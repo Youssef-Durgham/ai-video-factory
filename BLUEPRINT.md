@@ -1085,6 +1085,806 @@ VRAM peak: never exceeds 16GB (single model)
 
 ---
 
+---
+
+## Central Database Schema (SQLite) 🗄️
+
+**The backbone connecting all 40 features. Every agent reads/writes here.**
+
+Database file: `data/factory.db`
+
+### Core Tables
+
+#### `jobs` — Master job tracking (1 row = 1 video)
+```sql
+CREATE TABLE jobs (
+    id TEXT PRIMARY KEY,                    -- "job_20260310_001"
+    status TEXT NOT NULL DEFAULT 'pending', -- pending → research → seo → script → compliance → 
+                                           -- images → visual_qa → video → voice → music → sfx →
+                                           -- compose → final_qa → publish → published → tracking
+    channel_id TEXT NOT NULL,               -- "documentary_ar"
+    topic TEXT,                             -- "انهيار فنزويلا"
+    topic_source TEXT,                      -- "trend_scanner" | "calendar" | "manual" | "trending_hijack"
+    priority TEXT DEFAULT 'normal',         -- "normal" | "fast_track" | "seasonal"
+    narrative_style TEXT,                   -- "investigative" | "storytelling" | "explainer" | etc.
+    target_length_min INTEGER,              -- Dynamic length (Feature 37)
+    
+    -- Phase completion timestamps
+    phase1_completed_at TIMESTAMP,
+    phase2_completed_at TIMESTAMP,
+    phase3_completed_at TIMESTAMP,
+    phase4_completed_at TIMESTAMP,
+    phase5_completed_at TIMESTAMP,
+    phase6_completed_at TIMESTAMP,
+    phase7_completed_at TIMESTAMP,
+    phase8_completed_at TIMESTAMP,
+    
+    -- Phase retry counts
+    script_revisions INTEGER DEFAULT 0,     -- How many times script was revised (max 3)
+    image_regenerations INTEGER DEFAULT 0,  -- How many images were regenerated
+    video_retries INTEGER DEFAULT 0,
+    
+    -- Blocking / errors
+    blocked_at TIMESTAMP,                   -- If any QA gate blocked
+    blocked_reason TEXT,
+    blocked_phase TEXT,                      -- "phase4" | "phase6" | "phase7"
+    resolved_at TIMESTAMP,
+    
+    -- Final output
+    youtube_video_id TEXT,
+    youtube_url TEXT,
+    published_at TIMESTAMP,
+    scheduled_for TIMESTAMP,
+    
+    -- Metadata
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    total_production_time_sec INTEGER,
+    total_gpu_time_sec INTEGER
+);
+
+-- Index for quick status queries
+CREATE INDEX idx_jobs_status ON jobs(status);
+CREATE INDEX idx_jobs_channel ON jobs(channel_id);
+CREATE INDEX idx_jobs_created ON jobs(created_at);
+```
+
+#### `research` — Phase 1 trend data
+```sql
+CREATE TABLE research (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id TEXT REFERENCES jobs(id),
+    topic TEXT NOT NULL,
+    source TEXT,                    -- "youtube_trending" | "google_trends" | "news_rss" | "competitor"
+    search_volume INTEGER,
+    competition_score FLOAT,        -- 0-1 (lower = less competition)
+    trend_velocity FLOAT,           -- Rising speed
+    category TEXT,
+    suggested_angle TEXT,
+    rank_score FLOAT,               -- Combined ranking score
+    raw_data JSON,                  -- Full API response
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+#### `seo_data` — Phase 2 keyword & SEO analysis
+```sql
+CREATE TABLE seo_data (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id TEXT REFERENCES jobs(id),
+    
+    -- Keywords
+    primary_keywords JSON,          -- ["فنزويلا", "انهيار اقتصادي", "نفط"]
+    secondary_keywords JSON,
+    long_tail_keywords JSON,
+    
+    -- Titles
+    generated_titles JSON,          -- [{title, seo_score, keyword_density}]
+    selected_title TEXT,
+    selected_title_score FLOAT,
+    
+    -- Tags & Description
+    tags JSON,                      -- 30 tags
+    description_template TEXT,
+    hashtags JSON,
+    
+    -- Competitor analysis
+    top_competitors JSON,           -- [{channel, title, views, tags, description}]
+    unique_angle TEXT,
+    content_gap TEXT,
+    
+    -- Thumbnail keywords
+    thumbnail_text_suggestions JSON, -- Suggested text for thumbnails
+    
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+#### `scripts` — Phase 3 scripts with revision history
+```sql
+CREATE TABLE scripts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id TEXT REFERENCES jobs(id),
+    version INTEGER DEFAULT 1,      -- Revision number (1, 2, 3)
+    status TEXT DEFAULT 'draft',    -- "draft" | "reviewing" | "approved" | "rejected"
+    
+    -- Script content
+    full_text TEXT NOT NULL,         -- Complete Arabic script
+    word_count INTEGER,
+    estimated_duration_sec INTEGER,
+    
+    -- Structure
+    hook_text TEXT,
+    sections JSON,                  -- [{title, text, duration_sec}]
+    conclusion_text TEXT,
+    
+    -- SEO integration
+    keywords_included JSON,         -- Which SEO keywords appear in script
+    keyword_density FLOAT,
+    
+    -- Emotional arc (Feature 29)
+    emotional_arc JSON,             -- [{section, emotion, intensity_1_to_10}]
+    
+    -- Review results
+    reviewer_notes TEXT,
+    factual_accuracy_score FLOAT,
+    engagement_score FLOAT,
+    arabic_quality_score FLOAT,
+    
+    -- Research sources
+    sources JSON,                   -- [{url, title, claims_supported}]
+    
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX idx_scripts_job ON scripts(job_id);
+```
+
+#### `scenes` — Scene-level data (the core unit connecting everything)
+```sql
+CREATE TABLE scenes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id TEXT REFERENCES jobs(id),
+    scene_index INTEGER NOT NULL,   -- 0, 1, 2, ... (order)
+    
+    -- Script data
+    narration_text TEXT NOT NULL,
+    duration_sec FLOAT,
+    
+    -- Visual
+    visual_prompt TEXT,
+    visual_style TEXT,
+    camera_movement TEXT,
+    expected_elements JSON,         -- ["astronaut", "moon_surface"]
+    
+    -- Generated assets (file paths)
+    image_path TEXT,                -- "output/images/job_042/scene_001.png"
+    image_upscaled_path TEXT,       -- 4K version (Feature 33)
+    video_clip_path TEXT,           -- "output/videos/job_042/scene_001.mp4"
+    voice_path TEXT,                -- "output/audio/job_042/voice_001.wav"
+    
+    -- Generation metadata
+    image_seed INTEGER,
+    image_score FLOAT,              -- Visual QA score (1-10)
+    image_regenerated BOOLEAN DEFAULT FALSE,
+    video_method TEXT,              -- "ltx23" | "ken_burns" (fallback)
+    voice_emotion TEXT,             -- "dramatic" | "calm" | etc. (Feature 30)
+    voice_speed FLOAT DEFAULT 1.0,
+    
+    -- Audio
+    music_mood TEXT,
+    sfx_tags JSON,                  -- ["explosion", "crowd"]
+    sfx_paths JSON,                 -- Generated SFX file paths
+    
+    -- Text overlay
+    text_overlay JSON,              -- {text, style, position, animation}
+    
+    -- Presenter (Feature 32)
+    presenter_mode TEXT,            -- "pip" | "fullscreen" | "none"
+    presenter_path TEXT,            -- Generated presenter video path
+    
+    -- Timing (for final compose)
+    start_time_sec FLOAT,          -- Position in final video
+    end_time_sec FLOAT,
+    transition_type TEXT,           -- "crossfade" | "cut" | "dissolve"
+    
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX idx_scenes_job ON scenes(job_id);
+CREATE INDEX idx_scenes_order ON scenes(job_id, scene_index);
+```
+
+#### `compliance_checks` — Phase 4 + 7 QA results
+```sql
+CREATE TABLE compliance_checks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id TEXT REFERENCES jobs(id),
+    phase TEXT NOT NULL,             -- "phase4_script" | "phase7_final"
+    check_type TEXT NOT NULL,        -- "youtube_policy" | "copyright" | "fact_check" | "arabic_quality"
+    
+    status TEXT,                     -- "pass" | "warn" | "fail" | "block"
+    score FLOAT,
+    details TEXT,                    -- Explanation
+    flagged_items JSON,             -- Specific issues found
+    
+    -- Fact checking specifics
+    claims_checked INTEGER,
+    claims_verified INTEGER,
+    claims_unverified JSON,         -- [{claim, reason}]
+    
+    auto_fixed BOOLEAN DEFAULT FALSE,
+    fix_description TEXT,
+    
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+#### `audio_tracks` — Music + SFX with Content ID protection
+```sql
+CREATE TABLE audio_tracks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id TEXT REFERENCES jobs(id),
+    track_type TEXT NOT NULL,        -- "intro_music" | "background" | "tension" | "outro" | "sfx"
+    
+    -- Generation
+    prompt TEXT,
+    file_path TEXT,
+    duration_sec FLOAT,
+    seed INTEGER,
+    temperature FLOAT,
+    
+    -- Content ID protection (Feature 5.4.1)
+    fingerprint BLOB,
+    similarity_score FLOAT,          -- vs known songs database
+    content_id_safe BOOLEAN,
+    youtube_precheck_result TEXT,     -- "clean" | "claimed" | "not_checked"
+    
+    -- Post-processing
+    pitch_shifted BOOLEAN DEFAULT FALSE,
+    time_stretched BOOLEAN DEFAULT FALSE,
+    reverb_added BOOLEAN DEFAULT FALSE,
+    
+    -- If regenerated
+    regeneration_count INTEGER DEFAULT 0,
+    regeneration_reason TEXT,
+    
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+### Publishing & Analytics Tables
+
+#### `thumbnails` — Thumbnail generation + A/B testing
+```sql
+CREATE TABLE thumbnails (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id TEXT REFERENCES jobs(id),
+    variant TEXT,                     -- "A" | "B" | "C"
+    file_path TEXT,
+    
+    -- Generation
+    prompt TEXT,
+    text_overlay TEXT,               -- Arabic text on thumbnail
+    text_position TEXT,              -- "center_top" | "right_center"
+    style TEXT,                      -- "bold_dramatic" | "minimal" | "colorful"
+    
+    -- Validation (Feature 17)
+    readability_score FLOAT,         -- Vision LLM check at 320x180
+    youtube_ui_overlap BOOLEAN,      -- Does text overlap with timestamp/duration?
+    
+    -- A/B test results (Feature 8.1)
+    ab_test_id TEXT,                 -- YouTube Test & Compare ID
+    impressions INTEGER,
+    clicks INTEGER,
+    ctr FLOAT,                       -- Click-through rate
+    is_winner BOOLEAN,
+    
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+#### `subtitles` — SRT files (Feature 8.2.5)
+```sql
+CREATE TABLE subtitles (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id TEXT REFERENCES jobs(id),
+    language TEXT,                    -- "ar" | "en" | "tr" | etc.
+    srt_path TEXT,
+    word_count INTEGER,
+    uploaded_to_youtube BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+#### `youtube_analytics` — Performance tracking (Feature 8.4)
+```sql
+CREATE TABLE youtube_analytics (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id TEXT REFERENCES jobs(id),
+    youtube_video_id TEXT,
+    snapshot_period TEXT,             -- "24h" | "48h" | "7d" | "30d" | "90d"
+    
+    -- Core metrics
+    views INTEGER,
+    watch_time_hours FLOAT,
+    avg_view_duration_sec INTEGER,
+    avg_view_percentage FLOAT,       -- Retention %
+    
+    -- Engagement
+    likes INTEGER,
+    dislikes INTEGER,
+    comments INTEGER,
+    shares INTEGER,
+    
+    -- Discovery
+    impressions INTEGER,
+    ctr FLOAT,
+    traffic_sources JSON,            -- {browse: 40%, search: 30%, suggested: 20%, external: 10%}
+    
+    -- Revenue
+    estimated_revenue FLOAT,
+    rpm FLOAT,                       -- Revenue per mille
+    cpm FLOAT,                       -- Cost per mille
+    
+    -- Retention curve (Feature 12)
+    retention_curve JSON,            -- [{time_sec, retention_pct}] — every 5 seconds
+    drop_off_points JSON,            -- [{time_sec, drop_pct, scene_index}]
+    
+    -- Audience
+    top_countries JSON,
+    age_groups JSON,
+    gender_split JSON,
+    device_split JSON,
+    
+    captured_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX idx_analytics_job ON youtube_analytics(job_id);
+CREATE INDEX idx_analytics_period ON youtube_analytics(snapshot_period);
+```
+
+#### `shorts` — YouTube Shorts tracking (Feature 9)
+```sql
+CREATE TABLE shorts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    parent_job_id TEXT REFERENCES jobs(id),  -- Source long-form video
+    youtube_video_id TEXT,
+    
+    -- Content
+    source_scene_start INTEGER,      -- Which scene range was extracted
+    source_scene_end INTEGER,
+    title TEXT,
+    tags JSON,
+    file_path TEXT,
+    duration_sec FLOAT,
+    
+    -- Performance
+    views INTEGER,
+    likes INTEGER,
+    retention_pct FLOAT,
+    
+    published_at TIMESTAMP,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+### Intelligence Tables
+
+#### `competitor_channels` — Competitor monitoring (Feature 27)
+```sql
+CREATE TABLE competitor_channels (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    channel_id TEXT UNIQUE,          -- YouTube channel ID
+    channel_name TEXT,
+    category TEXT,                   -- "documentary" | "politics" | etc.
+    subscriber_count INTEGER,
+    total_videos INTEGER,
+    avg_views_per_video INTEGER,
+    last_scanned_at TIMESTAMP,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE competitor_videos (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    competitor_channel_id TEXT REFERENCES competitor_channels(channel_id),
+    youtube_video_id TEXT UNIQUE,
+    title TEXT,
+    topic TEXT,
+    views INTEGER,
+    published_at TIMESTAMP,
+    tags JSON,
+    description TEXT,
+    view_velocity FLOAT,             -- Views per hour in first 24h
+    is_viral BOOLEAN DEFAULT FALSE,  -- >500K views in 24h
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+#### `content_calendar` — Planned content (Feature 11)
+```sql
+CREATE TABLE content_calendar (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    channel_id TEXT,
+    planned_date DATE,
+    topic TEXT,
+    narrative_style TEXT,
+    priority TEXT DEFAULT 'normal',
+    source TEXT,                      -- "calendar_agent" | "manual" | "seasonal" | "trending"
+    status TEXT DEFAULT 'planned',   -- "planned" | "approved" | "in_production" | "published" | "cancelled"
+    job_id TEXT REFERENCES jobs(id), -- Linked once production starts
+    approved_by TEXT,                -- "yusif" | "auto"
+    approved_at TIMESTAMP,
+    notes TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX idx_calendar_date ON content_calendar(planned_date);
+```
+
+#### `seasonal_events` — Pre-planned seasonal content (Feature 34)
+```sql
+CREATE TABLE seasonal_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_name TEXT,                  -- "رمضان"
+    event_date DATE,                 -- Actual event date
+    prep_start_date DATE,            -- When to start producing
+    channel_id TEXT,
+    topics JSON,                     -- Suggested topics for this event
+    status TEXT DEFAULT 'upcoming',  -- "upcoming" | "producing" | "ready" | "published"
+    job_ids JSON,                    -- Linked video jobs
+    recurring BOOLEAN DEFAULT TRUE,  -- Repeats yearly?
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+#### `script_templates` — Evolved templates (Feature 24)
+```sql
+CREATE TABLE script_templates (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT,                       -- "high_retention_v3"
+    narrative_style TEXT,
+    channel_id TEXT,                 -- NULL = universal
+    version INTEGER DEFAULT 1,
+    
+    -- Structure
+    hook_type TEXT,                  -- "shocking_fact" | "rhetorical_question" | "mystery"
+    hook_max_sec INTEGER,
+    section_count INTEGER,
+    section_avg_sec INTEGER,
+    transition_style TEXT,
+    conclusion_type TEXT,
+    
+    -- Performance basis
+    based_on_jobs JSON,             -- Job IDs this template learned from
+    avg_retention_pct FLOAT,
+    avg_watch_time_sec INTEGER,
+    sample_size INTEGER,            -- How many videos contributed
+    
+    -- Status
+    active BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    retired_at TIMESTAMP            -- When replaced by better template
+);
+```
+
+#### `anti_repetition` — Pattern tracking (Feature 18)
+```sql
+CREATE TABLE anti_repetition (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id TEXT REFERENCES jobs(id),
+    channel_id TEXT,
+    
+    -- Tracked patterns
+    hook_style TEXT,                 -- "question" | "shocking_fact" | "mystery" | "narrative"
+    title_structure TEXT,            -- "كيف...؟" | "لماذا...؟" | "الحقيقة وراء..."
+    visual_palette TEXT,            -- "dark_cinematic" | "warm_golden" | "cool_blue"
+    music_mood TEXT,
+    narrative_style TEXT,
+    
+    published_at TIMESTAMP,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX idx_antirepeat_channel ON anti_repetition(channel_id, published_at);
+```
+
+#### `ab_tests` — A/B testing results (Feature 40)
+```sql
+CREATE TABLE ab_tests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    test_type TEXT,                  -- "hook_style" | "video_length" | "narration_speed" | "music_intensity"
+    
+    -- Variants
+    variant_a_job_id TEXT REFERENCES jobs(id),
+    variant_a_description TEXT,
+    variant_b_job_id TEXT REFERENCES jobs(id),
+    variant_b_description TEXT,
+    
+    -- Results (after 30 days)
+    variant_a_retention FLOAT,
+    variant_a_ctr FLOAT,
+    variant_a_watch_time FLOAT,
+    variant_a_revenue FLOAT,
+    variant_b_retention FLOAT,
+    variant_b_ctr FLOAT,
+    variant_b_watch_time FLOAT,
+    variant_b_revenue FLOAT,
+    
+    winner TEXT,                     -- "A" | "B" | "inconclusive"
+    lesson_learned TEXT,             -- Fed to script_templates
+    
+    started_at TIMESTAMP,
+    completed_at TIMESTAMP,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+#### `audience_insights` — Audience intelligence (Feature 22)
+```sql
+CREATE TABLE audience_insights (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    channel_id TEXT,
+    snapshot_date DATE,
+    
+    -- Demographics
+    top_countries JSON,
+    age_distribution JSON,
+    gender_split JSON,
+    peak_watch_hours JSON,           -- [{hour, viewer_count}]
+    device_split JSON,
+    
+    -- Comment mining
+    topic_requests JSON,             -- ["سووا فيديو عن...", ...]
+    sentiment_score FLOAT,           -- -1 to 1
+    common_questions JSON,
+    common_complaints JSON,
+    
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+#### `community_engagement` — Comment management (Feature 14)
+```sql
+CREATE TABLE community_engagement (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id TEXT REFERENCES jobs(id),
+    youtube_comment_id TEXT,
+    
+    action TEXT,                     -- "reply" | "heart" | "pin" | "hide" | "report"
+    original_comment TEXT,
+    reply_text TEXT,                 -- Our generated reply
+    sentiment TEXT,                  -- "positive" | "negative" | "neutral" | "spam" | "request"
+    
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+#### `repurposed_content` — Multi-platform tracking (Feature 21)
+```sql
+CREATE TABLE repurposed_content (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id TEXT REFERENCES jobs(id),
+    platform TEXT,                   -- "twitter" | "instagram" | "blog" | "podcast" | "telegram" | "pinterest"
+    content_type TEXT,               -- "thread" | "reel" | "article" | "audio" | "post" | "pin"
+    
+    content TEXT,                    -- The actual content (or file path)
+    file_path TEXT,
+    platform_post_id TEXT,           -- ID on the platform after publishing
+    platform_url TEXT,
+    
+    -- Performance
+    views INTEGER,
+    engagement INTEGER,              -- Likes + comments + shares
+    
+    published_at TIMESTAMP,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+#### `revenue` — Revenue tracking (Feature 25)
+```sql
+CREATE TABLE revenue (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id TEXT REFERENCES jobs(id),
+    channel_id TEXT,
+    date DATE,
+    
+    -- AdSense
+    adsense_revenue FLOAT,
+    rpm FLOAT,
+    cpm FLOAT,
+    
+    -- Sponsorship (Feature 20)
+    sponsor_name TEXT,
+    sponsor_revenue FLOAT,
+    sponsor_segment_skip_rate FLOAT,
+    
+    -- Mid-roll (Feature 19)
+    midroll_count INTEGER,
+    midroll_revenue FLOAT,
+    midroll_positions JSON,          -- [{time_sec, drop_off_pct}]
+    
+    -- Totals
+    total_revenue FLOAT,
+    
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX idx_revenue_date ON revenue(date);
+CREATE INDEX idx_revenue_channel ON revenue(channel_id);
+```
+
+#### `algorithm_signals` — YouTube algorithm tracking (Feature 39)
+```sql
+CREATE TABLE algorithm_signals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    date DATE,
+    channel_id TEXT,
+    
+    -- Signals
+    avg_impressions INTEGER,
+    avg_ctr FLOAT,
+    impression_change_pct FLOAT,     -- vs 7-day average
+    traffic_source_shift JSON,       -- Changes in traffic distribution
+    
+    -- Cross-reference
+    competitors_also_dropped BOOLEAN,
+    detected_algorithm_change BOOLEAN,
+    recommended_action TEXT,
+    
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+### Database Relationships Diagram
+```
+                    ┌──────────────┐
+                    │    jobs      │ ← Master table (1 row = 1 video)
+                    └──────┬───────┘
+                           │
+          ┌────────────────┼────────────────────────────────┐
+          │                │                                │
+    ┌─────▼──────┐  ┌──────▼───────┐              ┌────────▼────────┐
+    │  research  │  │   seo_data   │              │    scripts      │
+    │ (Phase 1)  │  │  (Phase 2)   │              │   (Phase 3)     │
+    └────────────┘  └──────────────┘              └─────────────────┘
+                                                          │
+                    ┌──────────────┐              ┌───────▼─────────┐
+                    │ compliance   │◄─────────────│     scenes      │
+                    │  _checks     │              │  (Phase 3→5→6)  │
+                    │ (Phase 4+7)  │              │ images, video,  │
+                    └──────────────┘              │ voice, overlays │
+                                                  └───────┬─────────┘
+          ┌────────────────┼────────────────────────────────┤
+          │                │                                │
+    ┌─────▼──────┐  ┌──────▼───────┐              ┌────────▼────────┐
+    │audio_tracks│  │  thumbnails  │              │    shorts       │
+    │(Phase 5)   │  │ (Phase 8)   │              │  (Feature 9)    │
+    │ +ContentID │  │  +A/B test   │              └─────────────────┘
+    └────────────┘  └──────────────┘
+                                                  ┌─────────────────┐
+    ┌────────────┐  ┌──────────────┐              │  repurposed     │
+    │ youtube    │  │  revenue     │              │  _content       │
+    │ _analytics │  │ (Feature 25) │              │ (Feature 21)    │
+    │(Feature 8) │  └──────────────┘              └─────────────────┘
+    └────────────┘
+                    ┌──────────────┐  ┌───────────────────┐
+                    │ content      │  │ script_templates  │
+                    │ _calendar    │  │ (Feature 24)      │
+                    │(Feature 11)  │  └───────────────────┘
+                    └──────────────┘
+                                      ┌───────────────────┐
+    ┌────────────┐  ┌──────────────┐  │ audience          │
+    │ competitor │  │ algorithm    │  │ _insights         │
+    │ _channels  │  │ _signals     │  │ (Feature 22)      │
+    │ _videos    │  │(Feature 39)  │  └───────────────────┘
+    └────────────┘  └──────────────┘
+                                      ┌───────────────────┐
+    ┌────────────┐  ┌──────────────┐  │ community         │
+    │ ab_tests   │  │ anti         │  │ _engagement       │
+    │(Feature 40)│  │ _repetition  │  │ (Feature 14)      │
+    └────────────┘  │(Feature 18)  │  └───────────────────┘
+                    └──────────────┘
+```
+
+### Database Access Pattern
+```python
+# src/utils/database.py
+
+class FactoryDB:
+    """Central database access for all agents."""
+    
+    def __init__(self, db_path="data/factory.db"):
+        self.conn = sqlite3.connect(db_path)
+        self.conn.execute("PRAGMA journal_mode=WAL")    # Write-ahead logging (concurrent reads)
+        self.conn.execute("PRAGMA foreign_keys=ON")      # Enforce relationships
+        self.conn.execute("PRAGMA busy_timeout=5000")    # Wait 5s if locked
+    
+    # ─── Job Management ────────────────────
+    def create_job(self, channel_id, topic, **kwargs) -> str: ...
+    def update_job_status(self, job_id, status) -> None: ...
+    def get_job(self, job_id) -> dict: ...
+    def get_active_jobs(self) -> list: ...
+    def get_blocked_jobs(self) -> list: ...
+    
+    # ─── Phase Data ────────────────────────
+    def save_research(self, job_id, topics) -> None: ...
+    def save_seo_data(self, job_id, keywords, titles, tags) -> None: ...
+    def save_script(self, job_id, text, version) -> int: ...
+    def save_scenes(self, job_id, scenes_list) -> None: ...
+    def save_compliance_check(self, job_id, phase, results) -> None: ...
+    
+    # ─── Asset Tracking ────────────────────
+    def update_scene_image(self, job_id, scene_index, path, score) -> None: ...
+    def update_scene_video(self, job_id, scene_index, path, method) -> None: ...
+    def update_scene_voice(self, job_id, scene_index, path) -> None: ...
+    def save_audio_track(self, job_id, track_type, path, fingerprint) -> None: ...
+    
+    # ─── Analytics & Intelligence ──────────
+    def save_analytics(self, job_id, period, metrics) -> None: ...
+    def get_retention_curve(self, job_id) -> list: ...
+    def get_revenue_by_channel(self, channel_id, days=30) -> dict: ...
+    def get_best_performing_jobs(self, channel_id, limit=20) -> list: ...
+    
+    # ─── Anti-Repetition ───────────────────
+    def log_content_pattern(self, job_id, patterns) -> None: ...
+    def get_recent_patterns(self, channel_id, last_n=10) -> list: ...
+    
+    # ─── Cross-Agent Queries ───────────────
+    def get_pipeline_status(self) -> dict:
+        """Dashboard: status of all active jobs."""
+        return {
+            "active": self.get_active_jobs(),
+            "blocked": self.get_blocked_jobs(),
+            "today_published": self.get_published_today(),
+            "queue_size": self.get_pending_count()
+        }
+```
+
+### Checkpoint & Recovery
+```python
+# Every phase updates job status BEFORE starting work:
+db.update_job_status(job_id, "images")  # Mark: now generating images
+
+# If pipeline crashes and restarts:
+def resume_pipeline(job_id):
+    job = db.get_job(job_id)
+    status = job['status']
+    
+    # Resume from last completed phase
+    if status == "images":
+        # Check which scenes already have images
+        scenes = db.get_scenes(job_id)
+        remaining = [s for s in scenes if not s['image_path']]
+        # Generate only missing images
+        generate_images(remaining)
+    elif status == "video":
+        # Check which scenes already have video clips
+        remaining = [s for s in scenes if not s['video_clip_path']]
+        generate_videos(remaining)
+    # ... etc
+```
+
+### Database Maintenance
+```python
+# Periodic cleanup (cron job — weekly)
+def cleanup_database():
+    # Archive analytics older than 90 days to separate file
+    db.execute("INSERT INTO archive.youtube_analytics SELECT * FROM youtube_analytics WHERE captured_at < date('now', '-90 days')")
+    db.execute("DELETE FROM youtube_analytics WHERE captured_at < date('now', '-90 days')")
+    
+    # Vacuum to reclaim space
+    db.execute("VACUUM")
+    
+    # Log database size
+    size_mb = os.path.getsize("data/factory.db") / 1e6
+    logger.info(f"Database size: {size_mb:.1f}MB")
+```
+
+---
+
 ## Phase 6: QA — Visual Verification ✅ GATE
 
 ### Purpose
@@ -1459,7 +2259,7 @@ ai-video-factory/
 │       ├── gpu_manager.py      # VRAM memory manager (load/unload/flush/monitor)
 │       ├── content_id_guard.py # Audio fingerprint + Content ID protection
 │       ├── gpu_scheduler.py    # GPU task queue (sequential, batched by model)
-│       ├── database.py         # SQLite operations
+│       ├── database.py         # Central SQLite (FactoryDB — all 40 agents read/write)
 │       ├── telegram_bot.py     # Notifications
 │       ├── logger.py           # Logging
 │       └── retry.py            # Retry logic for failed steps
