@@ -2430,84 +2430,130 @@ def cleanup_database():
 
 ---
 
-## Phase 6: QA — Visual Verification ✅ GATE
+## Phase 6: QA — Deep Visual Verification ✅ GATE (TWO STAGES)
 
-### Purpose
-**BEFORE generating video clips (expensive)**, verify that the generated images actually match the script scenes.
+> **Vision Model: Qwen2.5-VL 72B** — strongest open-source vision model.
+> Runs locally via Ollama. Far more accurate than Llama Vision 11B.
+> 
+> **Phase 6 runs TWICE** — once for images, once for video clips.
 
-### Components
+### Stage 6A: Image ↔ Script Verification (after FLUX, before LTX)
 
-#### 6.1 Image-Script Alignment Check
-- **Vision LLM** (local or API) analyzes each generated image:
-  - Does it match the `visual_prompt`?
-  - Does it contain the `expected_visual_elements`?
-  - Is it appropriate (no accidental NSFW, offensive content)?
-  - Is the quality acceptable (not blurry, artifacts)?
-  - Is the style consistent with previous scenes?
-- **Scoring:** Each image gets 1-10 score
-  - Score ≥ 7 → PASS
-  - Score 4-6 → regenerate with adjusted prompt (1 retry)
-  - Score < 4 → regenerate with completely new prompt (1 retry)
+#### 6A.1 Image-Script Deep Analysis
+- **Qwen2.5-VL 72B** analyzes each image with FULL script context:
+  - Scene narration text alongside the image
+  - Expected visual elements checklist
+  - Region/cultural accuracy (Iraq, Gulf, Egypt, etc.)
+  - Emotional tone match (dramatic, informative, tense)
+  - **Text detection** — images MUST contain zero text
+  - Quality scoring (sharpness, composition, lighting)
+- **7-dimension scoring** per image (see ARCHITECTURE.md §Phase 6 for full prompt)
+- **Scoring:**
+  - Overall ≥ 7 → PASS
+  - Overall 4-6 → regenerate with adjusted prompt (1 retry)
+  - Overall < 4 → regenerate with new prompt (1 retry)
+  - has_text = true → AUTOMATIC FAIL + regen (zero tolerance)
 
-#### 6.2 Style Consistency Check
-- Compare all scene images side by side:
-  - Color palette consistency
-  - Art style consistency
-  - Character appearance consistency (if recurring)
-- Flag outlier images for regeneration
+#### 6A.2 Style Consistency Check
+- ALL images sent to Qwen2.5-VL in one prompt
+- Checks: color palette, art style, lighting consistency across entire video
+- Flags outlier images that break visual coherence
 
-#### 6.3 Sequence Flow Check
-- View all images in order — does the visual story flow?
-- No jarring jumps between scenes
-- Transitions make visual sense
+#### 6A.3 Sequence Flow Check
+- Images viewed in order with narration alongside
+- Checks: visual story flows logically, no jarring jumps
 
-### Gate Logic
+#### 6A.4 Telegram Image Gallery 📱
+- **Every image sent to Yusif** via Telegram album with:
+  - Scene number, narration text, QA score, missing elements
+- Summary message with inline buttons: `[Approve All] [Regenerate Failed] [View Details]`
+
+### Gate 6A
 ```
-IF >90% images pass (score ≥ 7) → proceed to video generation
-IF 70-90% pass → regenerate failed ones (1 round)
+IF >90% images pass (score ≥ 7) → proceed to LTX video generation
+IF 70-90% pass → regenerate failed ones (1 round), re-verify
 IF <70% pass → BLOCK + alert Yusif
-   "⚠️ Image quality issue: [X] of [Y] scenes failed visual check"
+```
+
+### Stage 6B: Video Clip ↔ Script Verification (after LTX, before voice)
+
+#### 6B.1 Video Clip Deep Analysis
+- **Extract 3-5 keyframes** from each LTX clip (FFmpeg)
+- **Qwen2.5-VL 72B** analyzes keyframes with script context:
+  - Motion quality — smooth or glitchy/AI artifacts?
+  - Script match — does the motion convey the narration?
+  - Temporal coherence — do keyframes show logical progression?
+  - Artifact detection — morphing faces, warping objects, flickering
+  - Text detection — no text should appear in video
+- **Fallback logic:**
+  - verdict = "regen_video" → retry LTX with different motion prompt
+  - verdict = "regen_image" → source image was bad, go back to FLUX
+  - verdict = "ken_burns" → LTX can't handle this motion, use Ken Burns
+
+#### 6B.2 Telegram Video Gallery 📱
+- **Every video clip sent to Yusif** via Telegram with:
+  - Scene number, narration text, motion description, QA score
+- Summary with inline buttons: `[Approve All] [View Flagged] [Reject & Regen]`
+
+### Gate 6B
+```
+IF >85% clips pass → proceed to voice generation
+IF 60-85% pass → regenerate failed (LTX retry or Ken Burns fallback), re-verify
+IF <60% pass → BLOCK + alert Yusif
+```
+
+### Flow Summary
+```
+FLUX images → 6A (image QA) → LTX video → 6B (video QA) → Voice
+                  ↑                              ↑
+                  └─ regen loop                   └─ regen/fallback loop
 ```
 
 ---
 
-## Phase 7: QA — Final Video Check ✅ GATE
+## Phase 7: QA — Final Assembled Video Check ✅ GATE
 
 ### Purpose
-After FFmpeg composes the final video — verify it's correct before publishing.
+After FFmpeg composes the **FULL** final video (all clips + voice + music + SFX + text overlays) — verify the assembled product is correct.
+
+> **Vision Model: Qwen2.5-VL 72B** — same model as Phase 6, used here on the FINAL assembled video.
 
 ### Components
 
-#### 7.1 Technical Quality Check (automated)
+#### 7.1 Technical Quality Check (automated — CPU only)
 - **Audio-Video Sync:**
   - Narration aligns with correct scenes
   - No audio drift over time
-  - Music doesn't overpower narration
+  - Music doesn't overpower narration (volume levels)
 - **Duration Check:**
   - Total video length matches expected (8-12 min)
   - No scenes too short (<2s) or too long (>20s)
   - No black frames or frozen frames
 - **Resolution & Bitrate:**
-  - Minimum 1080p
-  - Bitrate adequate (no compression artifacts)
+  - Minimum 1080p, bitrate adequate
   - Audio quality (no clipping, no silence gaps)
 - **File Integrity:**
-  - MP4 is valid and playable
-  - No corruption
-  - File size reasonable (expect 200MB-1GB for 10min 1080p)
+  - MP4 valid and playable, no corruption
 
-#### 7.2 Content Coherence Check
-- **LLM reviews** (using extracted frames + audio transcript):
-  - Does the narration match what's shown on screen?
-  - Are text overlays readable and correctly timed?
-  - Is the intro/outro present and correct?
-  - Does it flow well as a complete video?
+#### 7.2 Content Coherence — Vision Check (Qwen2.5-VL 72B)
+- **Extract 1 keyframe per scene** from the FINAL assembled video
+- **Qwen2.5-VL analyzes** keyframes + narration transcript together:
+  - Does each frame match its narration?
+  - Are **Arabic text overlays** readable, correctly positioned, properly timed?
+  - Is the intro/outro present and branded correctly?
+  - Does it flow as a **complete** video (not disjointed clips)?
+  - Any visual artifacts introduced during FFmpeg composition?
+- Score: 1-10 content coherence
 
-#### 7.3 Final Compliance Re-check
-- One last check on the composed video:
-  - Any accidental inappropriate visual content?
-  - Audio: any artifacts that sound like copyrighted content?
-  - Overall: would this pass YouTube's automated review?
+#### 7.3 Final Compliance Re-check (Qwen 72B text)
+- YouTube policy sweep on full transcript + metadata
+- Any accidental inappropriate content in assembled video?
+- Content ID final check on mixed audio track
+
+#### 7.4 Telegram Final Preview 📱
+- **Full assembled video sent to Yusif** via Telegram
+- Includes: QA scores, duration, topic, compliance status
+- Inline buttons: `[✅ Publish] [🔄 Regenerate] [❌ Cancel]`
 
 ### Gate Logic
 ```

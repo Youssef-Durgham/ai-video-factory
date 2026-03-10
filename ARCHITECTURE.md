@@ -621,11 +621,13 @@ class JobStatus(str, Enum):
     SCRIPT        = "script"
     COMPLIANCE    = "compliance"
     
-    # Phase 5 sub-states (asset generation)
-    IMAGES        = "images"
-    VISUAL_QA     = "visual_qa"
-    IMAGE_REGEN   = "image_regen"      # Regenerating failed images
-    VIDEO         = "video"
+    # Phase 5+6 sub-states (asset generation + verification)
+    IMAGES        = "images"           # FLUX image generation
+    IMAGE_QA      = "image_qa"         # 6A: Qwen2.5-VL verifies images vs script
+    IMAGE_REGEN   = "image_regen"      # Regenerate failed images
+    VIDEO         = "video"            # LTX-2.3 video generation
+    VIDEO_QA      = "video_qa"         # 6B: Qwen2.5-VL verifies video clips vs script
+    VIDEO_REGEN   = "video_regen"      # Regenerate failed clips (or Ken Burns fallback)
     VOICE         = "voice"
     MUSIC         = "music"
     SFX           = "sfx"
@@ -656,11 +658,13 @@ TRANSITIONS: dict[JobStatus, list[JobStatus]] = {
     JobStatus.SCRIPT:        [JobStatus.COMPLIANCE, JobStatus.BLOCKED],
     JobStatus.COMPLIANCE:    [JobStatus.IMAGES, JobStatus.BLOCKED],
     
-    # Phase 5 sub-pipeline
-    JobStatus.IMAGES:        [JobStatus.VISUAL_QA, JobStatus.BLOCKED],
-    JobStatus.VISUAL_QA:     [JobStatus.VIDEO, JobStatus.IMAGE_REGEN, JobStatus.BLOCKED],
-    JobStatus.IMAGE_REGEN:   [JobStatus.VISUAL_QA],  # Goes back to QA after regen
-    JobStatus.VIDEO:         [JobStatus.VOICE, JobStatus.BLOCKED],
+    # Phase 5+6 sub-pipeline (interleaved generation + verification)
+    JobStatus.IMAGES:        [JobStatus.IMAGE_QA, JobStatus.BLOCKED],
+    JobStatus.IMAGE_QA:      [JobStatus.VIDEO, JobStatus.IMAGE_REGEN, JobStatus.BLOCKED],
+    JobStatus.IMAGE_REGEN:   [JobStatus.IMAGE_QA],   # Re-verify after regen
+    JobStatus.VIDEO:         [JobStatus.VIDEO_QA, JobStatus.BLOCKED],
+    JobStatus.VIDEO_QA:      [JobStatus.VOICE, JobStatus.VIDEO_REGEN, JobStatus.BLOCKED],
+    JobStatus.VIDEO_REGEN:   [JobStatus.VIDEO_QA],   # Re-verify after regen
     JobStatus.VOICE:         [JobStatus.MUSIC, JobStatus.BLOCKED],
     JobStatus.MUSIC:         [JobStatus.SFX, JobStatus.BLOCKED],
     JobStatus.SFX:           [JobStatus.COMPOSE, JobStatus.BLOCKED],
@@ -697,14 +701,16 @@ GPU_REQUIREMENTS: dict[JobStatus, Optional[str]] = {
     JobStatus.SCRIPT:       "qwen2.5:72b",
     JobStatus.COMPLIANCE:   "qwen2.5:72b",
     JobStatus.IMAGES:       "flux",
-    JobStatus.VISUAL_QA:    "llama3.2-vision:11b",
+    JobStatus.IMAGE_QA:     "qwen2.5-vl:72b",      # Vision verification
     JobStatus.IMAGE_REGEN:  "flux",
     JobStatus.VIDEO:        "ltx",
+    JobStatus.VIDEO_QA:     "qwen2.5-vl:72b",      # Vision verification
+    JobStatus.VIDEO_REGEN:  "ltx",                  # Or Ken Burns (CPU)
     JobStatus.VOICE:        "fish_speech",
     JobStatus.MUSIC:        "musicgen",
     JobStatus.SFX:          "audiogen",
     JobStatus.COMPOSE:      None,             # CPU only
-    JobStatus.FINAL_QA:     "qwen2.5:72b",
+    JobStatus.FINAL_QA:     "qwen2.5-vl:72b",   # Vision for frame analysis + text for compliance
     JobStatus.MANUAL_REVIEW: None,            # Waiting for human
     JobStatus.PUBLISH:      "flux",           # Thumbnails
 }
@@ -950,7 +956,7 @@ class ResourceCoordinator:
         self.current_model = None
     
     def _get_model_type(self, model_name: str) -> str:
-        if model_name in ("qwen2.5:72b", "llama3.2-vision:11b"):
+        if model_name in ("qwen2.5:72b", "qwen2.5-vl:72b"):
             return "ollama"
         elif model_name in ("flux", "ltx"):
             return "comfyui"
@@ -2120,45 +2126,274 @@ GPU models are swapped between sub-modules (see main.py GPU slots).
         Returns: path to final.mp4
 ```
 
-#### Phase 6: Visual QA (`src/phase6_visual_qa/`)
+#### Phase 6: Visual QA — Deep Verification (`src/phase6_visual_qa/`)
+
+> **Vision Model: Qwen2.5-VL 72B** (not Llama Vision 11B)
+> Reason: Arabic text understanding, complex scene analysis, much higher accuracy.
+> GPU: Runs via Ollama, same slot as Qwen text (already have 72B quantized).
+
 ```
-Input:  Generated images (from DB: scenes.image_path)
-Output: Pass/Fail per image → DB: scenes.image_score
-LLM:    Llama 3.2 Vision 11B
-GATE:   Can block or trigger regeneration
+Input:  Generated images + video clips + script scenes
+Output: Pass/Fail per asset → DB: scenes.image_score, scenes.video_score
+LLM:    Qwen2.5-VL 72B (via Ollama)
+GATE:   Can block, trigger regeneration, or send to Telegram for human review
+
+═══════════════════════════════════════════════════════════════
+STAGE 6A: IMAGE ↔ SCRIPT VERIFICATION (after FLUX, before LTX)
+═══════════════════════════════════════════════════════════════
 
 Files to build:
-├── image_checker.py
-│   └── check_image(image_path: str, scene: dict) → ImageCheckResult
-│       Uses: Ollama + llama3.2-vision
-│       Prompt: "Does this image match: {visual_prompt}? 
-│               Expected elements: {expected_elements}. Score 1-10."
-│       Returns: ImageCheckResult(score, matches_prompt, has_nsfw, quality_ok)
+├── image_script_verifier.py
+│   └── verify_image_against_script(image_path, scene) → ImageVerification
+│       
+│       Qwen2.5-VL prompt (per image):
+│       ┌──────────────────────────────────────────────────────┐
+│       │ You are a documentary video quality inspector.        │
+│       │                                                      │
+│       │ SCRIPT CONTEXT:                                      │
+│       │ - Scene #{scene_index} of {total_scenes}             │
+│       │ - Narration: "{narration_text}"                      │
+│       │ - Visual description: "{visual_prompt}"              │
+│       │ - Expected elements: {expected_elements}             │
+│       │ - Region/setting: {region}                           │
+│       │ - Emotional tone: {emotion}                          │
+│       │                                                      │
+│       │ ANALYZE THIS IMAGE:                                  │
+│       │ 1. Script Match (1-10): Does the image convey what  │
+│       │    the narration describes?                          │
+│       │ 2. Element Check: Which expected elements are        │
+│       │    present/missing?                                  │
+│       │ 3. Text Detection: Does the image contain any        │
+│       │    visible text/writing/letters? (MUST be 0)         │
+│       │ 4. Quality (1-10): Sharpness, composition, lighting │
+│       │ 5. Cultural Accuracy: Appropriate for {region}?      │
+│       │ 6. NSFW/Sensitive: Any inappropriate content?        │
+│       │ 7. Emotion Match: Does visual mood match {emotion}?  │
+│       │                                                      │
+│       │ Return JSON with all 7 scores + reasoning.           │
+│       └──────────────────────────────────────────────────────┘
+│       
+│       Returns: ImageVerification(
+│           script_match: float,       # 1-10
+│           element_presence: dict,    # {element: bool}
+│           has_text: bool,            # MUST be False
+│           quality: float,            # 1-10
+│           cultural_ok: bool,
+│           nsfw_detected: bool,
+│           emotion_match: float,      # 1-10
+│           overall: float,            # weighted average
+│           reasoning: str,            # LLM explanation
+│           verdict: str               # "pass" | "regen" | "block"
+│       )
 │
 ├── style_checker.py
 │   └── check_consistency(image_paths: list) → float
-│       Compares color palettes, style across all images
-│       Returns: consistency_score (0-1)
+│       Send ALL images to Qwen2.5-VL in one prompt:
+│       "These are scenes from the same documentary video.
+│        Score style consistency (color palette, art style, lighting): 1-10.
+│        Flag any outlier images that break visual coherence."
+│       Returns: consistency_score (0-1), outlier_indices: list
 │
-└── sequence_checker.py
-    └── check_flow(image_paths: list, scenes: list) → FlowResult
-        Checks: visual story makes sense in order
-        Returns: FlowResult(score, jarring_transitions: list)
+├── sequence_checker.py
+│   └── check_flow(image_paths: list, scenes: list) → FlowResult
+│       Send images in ORDER with narration alongside:
+│       "These images play in sequence with this narration.
+│        Score visual flow (1-10). Flag any jarring transitions."
+│       Returns: FlowResult(score, jarring_transitions: list)
+│
+├── telegram_gallery.py     ← NEW: Send images+script to Yusif
+│   └── send_image_gallery(job_id) → None
+│       Sends Telegram album: each image captioned with its narration text
+│       Format per image:
+│       ┌──────────────────────────────────┐
+│       │ 🎬 Scene 3/15                    │
+│       │ 📝 "النص اللي يقرأه المعلق..."  │
+│       │ 🎯 Score: 8.5/10                 │
+│       │ ⚠️ Missing: mosque in background │
+│       │ [📷 IMAGE ATTACHED]              │
+│       └──────────────────────────────────┘
+│       
+│       After all images:
+│       Summary message:
+│       "✅ 13/15 images passed (avg 8.2/10)
+│        ⚠️ 2 images need review: Scene 5, Scene 11
+│        [Approve All] [Regenerate Failed] [View Details]"
+│
+└── image_qa_coordinator.py  ← Orchestrates 6A
+    └── run_image_qa(job_id) → ImageQAResult
+        1. Load Qwen2.5-VL 72B
+        2. Run image_script_verifier on EACH scene
+        3. Run style_checker on ALL images
+        4. Run sequence_checker on ALL images in order
+        5. Send telegram_gallery to Yusif
+        6. Return aggregate result
+
+═══════════════════════════════════════════════════════════════
+STAGE 6B: VIDEO CLIP ↔ SCRIPT VERIFICATION (after LTX, before voice)
+═══════════════════════════════════════════════════════════════
+
+├── video_script_verifier.py    ← NEW: Verify LTX video clips
+│   └── verify_video_against_script(video_path, scene) → VideoVerification
+│       
+│       Method: Extract 3-5 keyframes from each clip → send to Qwen2.5-VL
+│       
+│       Qwen2.5-VL prompt (per video clip):
+│       ┌──────────────────────────────────────────────────────┐
+│       │ You are inspecting a video clip for a documentary.    │
+│       │                                                      │
+│       │ SCRIPT CONTEXT:                                      │
+│       │ - Narration: "{narration_text}"                      │
+│       │ - Motion description: "{motion_prompt}"              │
+│       │ - Expected movement: {expected_motion}               │
+│       │ - Duration: {expected_duration}s                     │
+│       │                                                      │
+│       │ Here are {N} keyframes extracted from the clip:      │
+│       │ [Frame 1: 0.0s] [Frame 2: 1.5s] [Frame 3: 3.0s]   │
+│       │                                                      │
+│       │ ANALYZE:                                             │
+│       │ 1. Motion Quality (1-10): Smooth? Natural? Or        │
+│       │    glitchy/AI-artifact-heavy?                        │
+│       │ 2. Script Match (1-10): Does the motion match what   │
+│       │    the narration describes?                          │
+│       │ 3. Temporal Coherence (1-10): Do keyframes show a    │
+│       │    logical progression?                              │
+│       │ 4. Artifact Detection: Morphing faces? Warping       │
+│       │    objects? Flickering?                              │
+│       │ 5. Text Detection: Any text appeared in video?       │
+│       │                                                      │
+│       │ Return JSON with scores + reasoning.                 │
+│       └──────────────────────────────────────────────────────┘
+│       
+│       Returns: VideoVerification(
+│           motion_quality: float,
+│           script_match: float,
+│           temporal_coherence: float,
+│           artifacts: list[str],
+│           has_text: bool,
+│           overall: float,
+│           verdict: str,          # "pass" | "regen_video" | "regen_image" | "ken_burns"
+│           reasoning: str
+│       )
+│       
+│       Fallback logic:
+│       - verdict="regen_video" → retry LTX with adjusted motion prompt
+│       - verdict="regen_image" → source image was bad, go back to FLUX
+│       - verdict="ken_burns" → LTX can't do this motion, use Ken Burns instead
+│
+├── video_keyframe_extractor.py  ← NEW
+│   └── extract_keyframes(video_path, count=5) → list[str]
+│       Uses FFmpeg: ffmpeg -i clip.mp4 -vf "select='eq(pict_type,I)'" -frames:v 5
+│       Returns: list of temp image paths
+│
+├── telegram_video_gallery.py    ← NEW: Send video clips+script to Yusif
+│   └── send_video_gallery(job_id) → None
+│       Sends each LTX clip as Telegram video with caption:
+│       ┌──────────────────────────────────────────────────────┐
+│       │ 🎬 Scene 3/15 — Video Clip                          │
+│       │ 📝 "النص اللي يقرأه المعلق هنا..."                 │
+│       │ 🎥 Motion: "slow pan across ancient ruins"           │
+│       │ 🎯 Vision Score: 8.0/10                             │
+│       │ ⚠️ Minor: slight warping at 2.1s                    │
+│       │ [🎬 VIDEO ATTACHED]                                  │
+│       └──────────────────────────────────────────────────────┘
+│       
+│       Summary:
+│       "🎬 Video Clips Review:
+│        ✅ 12/15 clips passed
+│        ⚠️ 2 clips regenerated (Ken Burns fallback)
+│        ❌ 1 clip needs manual review: Scene 8
+│        [Approve All] [View Flagged] [Reject & Regen]"
+│
+└── visual_qa_coordinator.py   ← Master coordinator for Phase 6
+    └── run(job_id) → Phase6Result
+        
+        EXECUTION ORDER:
+        ─────────────────
+        STEP 1: Load Qwen2.5-VL 72B
+        
+        STEP 2: IMAGE QA (Stage 6A)
+          a. Verify each image vs script
+          b. Check style consistency
+          c. Check sequence flow
+          d. Send image gallery to Telegram
+          e. Gate: >90% pass → continue; 70-90% → regen; <70% → block
+        
+        STEP 3: Unload Qwen2.5-VL → Load FLUX (if regen needed)
+          a. Regenerate failed images
+          b. Unload FLUX → Load Qwen2.5-VL → Re-verify
+        
+        STEP 4: Unload Qwen2.5-VL → (PipelineRunner handles LTX loading)
+          → VIDEO GENERATION HAPPENS (Phase 5b)
+          → Return to Phase 6 Stage 6B
+        
+        STEP 5: VIDEO QA (Stage 6B)
+          a. Load Qwen2.5-VL 72B again
+          b. Extract keyframes from each clip
+          c. Verify each video vs script
+          d. Handle fallbacks (regen/ken burns)
+          e. Send video gallery to Telegram
+          f. Gate: >85% pass → continue; else → regen or block
+        
+        STEP 6: Unload Qwen2.5-VL
+```
+
+**⚠️ CRITICAL: Phase 6 now runs in TWO stages with LTX in between:**
+```
+Images → 6A (image QA) → LTX video gen → 6B (video QA) → Voice gen
+```
+This means the state machine needs these transitions:
+```
+IMAGES → IMAGE_QA → VIDEO_GEN → VIDEO_QA → VOICE → ...
 ```
 
 #### Phase 7: Final QA (`src/phase7_video_qa/`)
 ```
-Input:  Composed video (output/[job_id]/final.mp4)
+Input:  Composed video (output/[job_id]/final.mp4) — FULL assembled video
 Output: Pass/Fail → DB: compliance_checks table
-LLM:    Qwen 72B (for content check)
+LLM:    Qwen2.5-VL 72B (vision) + Qwen 72B (text compliance)
 GATE:   Can block
 
 Files to build:
 ├── technical_check.py    → A/V sync, duration, resolution, bitrate, file integrity
 │   Uses: ffprobe (part of FFmpeg) — no GPU needed
 │
-├── content_check.py      → Extract frames → Qwen checks narration-visual alignment
-└── final_compliance.py   → One last YouTube policy sweep
+├── content_check.py      → Extract 1 frame per scene from FINAL video
+│   Uses: Qwen2.5-VL 72B
+│   Prompt: "This is the final assembled documentary video.
+│            Here are keyframes from {N} scenes with their narration.
+│            Check:
+│            1. Does each frame match its narration?
+│            2. Are text overlays readable and correctly positioned?
+│            3. Is the intro/outro present?
+│            4. Does it flow as a complete video?
+│            5. Any frames that would get the video flagged?"
+│   Returns: ContentCheckResult(score, issues: list)
+│
+├── final_compliance.py   → One last YouTube policy sweep (Qwen 72B text)
+│
+├── telegram_final_preview.py  ← NEW: Send final video to Yusif
+│   └── send_final_preview(job_id) → None
+│       Sends the FULL composed video to Telegram with:
+│       ┌──────────────────────────────────────────────────────┐
+│       │ 🎬 FINAL VIDEO — Ready for Review                   │
+│       │ 📋 Topic: "{title}"                                  │
+│       │ ⏱️ Duration: 10:24                                   │
+│       │ 🎯 QA Scores:                                        │
+│       │    Technical: 9.2/10                                 │
+│       │    Content Match: 8.7/10                             │
+│       │    Compliance: ✅ PASS                                │
+│       │ [▶️ VIDEO ATTACHED — full video]                     │
+│       │                                                      │
+│       │ [✅ Publish] [🔄 Regenerate] [❌ Cancel]             │
+│       └──────────────────────────────────────────────────────┘
+│
+└── video_qa_coordinator.py
+    └── run(job_id) → Phase7Result
+        1. technical_check (CPU — no GPU needed)
+        2. Load Qwen2.5-VL 72B → content_check (vision)
+        3. Swap to Qwen 72B → final_compliance (text)
+        4. Send final preview to Telegram
+        5. Return aggregate result + gate decision
 ```
 
 #### Phase 8: Publish (`src/phase8_publish/`)
