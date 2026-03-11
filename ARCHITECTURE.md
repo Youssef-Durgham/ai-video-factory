@@ -190,6 +190,19 @@ ai-video-factory/
 │   │   ├── upscaler.py             # Real-ESRGAN 4K upscale
 │   │   ├── text_animator.py        # Animated Arabic text overlay system
 │   │   ├── font_selector.py        # AI font + animation selection (Qwen 72B)
+│   │   ├── color_grader.py         # Color grading + LUT application
+│   │   ├── transition_engine.py    # AI-driven scene transitions
+│   │   ├── music_scene_sync.py     # Per-mood-zone music generation
+│   │   ├── intro_outro.py          # Dynamic intro/outro per content type
+│   │   ├── luts/                   # Cinematic LUT files (.cube)
+│   │   │   ├── documentary_neutral.cube
+│   │   │   ├── dramatic_teal_orange.cube
+│   │   │   ├── historical_sepia_warm.cube
+│   │   │   ├── military_cold_steel.cube
+│   │   │   ├── islamic_warm_gold.cube
+│   │   │   ├── tech_cyberpunk.cube
+│   │   │   ├── editorial_clean.cube
+│   │   │   └── storytelling_warm.cube
 │   │   └── fonts/                  # Arabic font library (OTF/TTF files)
 │   │       ├── IBM_Plex_Sans_Arabic/
 │   │       ├── Noto_Naskh_Arabic/
@@ -206,7 +219,10 @@ ai-video-factory/
 │   │   ├── __init__.py
 │   │   ├── image_checker.py        # Vision LLM: image vs script
 │   │   ├── style_checker.py        # Style consistency
-│   │   └── sequence_checker.py     # Visual flow check
+│   │   ├── sequence_checker.py     # Visual flow check
+│   │   ├── audio_qa.py             # Voice/Music/SFX/Mix QA (§4.9)
+│   │   ├── overlay_checker.py      # Text overlay QA (§Phase 6C)
+│   │   └── regen_comparator.py     # Before/after comparison (§4.14)
 │   │
 │   ├── phase7_video_qa/
 │   │   ├── __init__.py
@@ -1916,6 +1932,683 @@ class GlitchAnimation:
 
 ---
 
+### 4.9 Audio QA System (`src/phase6_visual_qa/audio_qa.py`)
+
+> **The missing QA layer.** Images/video have 3-layer verification. Audio has NOTHING.
+> Audio = 50% of video quality (voice, music, SFX). Must be verified.
+
+```python
+"""
+Audio QA — 3-layer verification for all audio assets.
+Runs after each audio generation step (VOICE, MUSIC, SFX).
+
+Architecture:
+  VOICE → Audio QA (voice) → MUSIC → Audio QA (music) → SFX → Audio QA (sfx)
+  
+Audio QA runs INLINE (not a separate phase) — lightweight checks after each generation.
+Heavy checks (full mix analysis) run after COMPOSE.
+"""
+
+# ═══════════════════════════════════════════════════════════════
+# VOICE QA
+# ═══════════════════════════════════════════════════════════════
+
+class VoiceQA:
+    """
+    Verify Fish Speech voice output quality.
+    
+    LAYER 1: DETERMINISTIC (signal processing)
+    ├── Silence detection
+    │   → librosa.effects.split() — find silent gaps
+    │   → Gap > 2s in middle of narration = FAIL
+    │   → No audio at all = FAIL
+    ├── Clipping detection  
+    │   → Samples hitting ±1.0 for > 10ms = clipping
+    │   → > 5 clip events = FAIL
+    ├── Duration check
+    │   → Actual vs expected (from script word count × WPM)
+    │   → Off by > 20% = suspect (too fast/slow)
+    ├── SNR (Signal-to-Noise Ratio)
+    │   → SNR < 20dB = poor quality
+    ├── Spectral analysis
+    │   → Frequency range 80Hz-8kHz (human speech)
+    │   → Energy outside this range = artifacts
+    └── Consistent volume (RMS)
+        → Scene-to-scene RMS variation > 6dB = inconsistent
+    
+    LAYER 2: WHISPER STT VERIFICATION (CPU — no GPU needed)
+    ├── Run Whisper (tiny/base) on generated audio
+    │   → Compare transcription vs original script text
+    │   → Word Error Rate (WER) calculation
+    │   → WER > 15% = pronunciation problems
+    ├── Arabic-specific checks
+    │   → Common Fish Speech Arabic errors:
+    │     - ع vs أ confusion
+    │     - ح vs ه confusion  
+    │     - Tashkeel (diacritics) pronunciation
+    │     - Names/places pronunciation
+    └── Timing extraction
+        → Word-level timestamps for word-by-word text animation sync
+    
+    LAYER 3: PROSODY ANALYSIS
+    ├── Pitch contour (F0 tracking via CREPE/pYIN)
+    │   → Monotone detection: pitch std < threshold = robotic
+    │   → Pitch matches scene emotion? (sad=lower, exciting=higher)
+    ├── Speaking rate variation
+    │   → Constant WPM throughout = unnatural
+    │   → Should vary with content (faster for action, slower for emphasis)
+    └── Emotion match
+        → Scene emotion tag vs detected audio emotion
+        → Basic classifier: energy + pitch + rate → calm/excited/tense/sad
+    
+    Returns: VoiceQAResult(
+        silence_gaps: list,
+        clipping_events: int,
+        duration_ratio: float,       # actual/expected
+        snr_db: float,
+        wer: float,                  # Word Error Rate
+        misheard_words: list[dict],  # [{expected, heard, timestamp}]
+        pitch_monotone: bool,
+        emotion_match: float,        # 0-1
+        word_timestamps: list,       # For text animation sync
+        verdict: str,                # pass | regen | flag_human
+    )
+    """
+    pass
+
+
+# ═══════════════════════════════════════════════════════════════
+# MUSIC QA
+# ═══════════════════════════════════════════════════════════════
+
+class MusicQA:
+    """
+    Verify MusicGen output + scene mood alignment.
+    
+    LAYER 1: DETERMINISTIC
+    ├── Duration match (expected vs actual)
+    ├── Content ID check (already exists — audio fingerprint)
+    ├── Clipping / distortion detection
+    ├── Silence detection (should be continuous)
+    └── Volume level appropriate for background (target: -18 to -24 LUFS)
+    
+    LAYER 2: MOOD ANALYSIS
+    ├── Extract audio features (librosa)
+    │   → Tempo (BPM), key, energy, danceability
+    ├── Compare vs scene mood tag
+    │   → "tense" scene should have: minor key, low tempo, sparse arrangement
+    │   → "hopeful" scene: major key, moderate tempo, fuller arrangement
+    │   → "dramatic" scene: variable tempo, dynamic range, crescendos
+    └── Transition smoothness
+        → If music changes between scenes, check for abrupt cuts
+        → Auto-crossfade if cut detected
+    
+    Returns: MusicQAResult(
+        content_id_safe: bool,
+        mood_match: float,           # 0-1
+        volume_lufs: float,
+        tempo_bpm: float,
+        verdict: str
+    )
+    """
+    pass
+
+
+# ═══════════════════════════════════════════════════════════════
+# MIX QA (after COMPOSE — full audio mix analysis)
+# ═══════════════════════════════════════════════════════════════
+
+class MixQA:
+    """
+    After FFmpeg mixes voice + music + SFX → verify the MIX is correct.
+    
+    Checks:
+    ├── Voice intelligibility
+    │   → Run Whisper on MIXED audio (not isolated voice)
+    │   → WER should be close to isolated voice WER
+    │   → If WER increased > 5% → music/SFX too loud
+    ├── Music ducking verification
+    │   → During narration: music volume should drop
+    │   → Measure music-to-voice ratio during speech segments
+    │   → Ratio should be -12dB to -18dB
+    ├── SFX timing
+    │   → SFX should not overlap with key narration words
+    │   → SFX volume should not exceed voice
+    ├── Overall loudness
+    │   → LUFS measurement (YouTube target: -14 LUFS)
+    │   → True peak < -1 dBTP
+    └── Audio-video sync drift
+        → Compare voice onset with scene transition timing
+        → Drift > 100ms = problem
+    
+    Returns: MixQAResult(
+        voice_intelligibility_wer: float,
+        ducking_correct: bool,
+        overall_lufs: float,
+        true_peak_dbtp: float,
+        av_sync_drift_ms: float,
+        verdict: str
+    )
+    """
+    pass
+```
+
+### 4.10 Color Grading System (`src/phase5_production/color_grader.py`)
+
+> **Problem:** FLUX generates each image independently → inconsistent colors across scenes.
+> A documentary needs unified visual identity.
+
+```python
+"""
+Automatic color grading — ensures visual consistency across all scenes.
+Runs AFTER all images generated, BEFORE video generation (LTX).
+
+Pipeline:
+  FLUX images → Color Grader → graded images → LTX video → ...
+
+Method: Reference-based color transfer + LUT application.
+CPU only — no GPU needed.
+"""
+
+class ColorGrader:
+    """
+    Two approaches (AI selects which):
+    
+    APPROACH 1: LUT-Based (fast, predictable)
+    ├── Library of cinematic LUTs categorized by mood:
+    │   ├── documentary_neutral.cube    — clean, slightly desaturated
+    │   ├── dramatic_teal_orange.cube   — Hollywood blockbuster look
+    │   ├── historical_sepia_warm.cube  — warm, aged feel
+    │   ├── military_cold_steel.cube    — blue-grey, high contrast
+    │   ├── islamic_warm_gold.cube      — warm, golden tones
+    │   ├── tech_cyberpunk.cube         — high saturation, neon accents
+    │   ├── editorial_clean.cube        — minimal color shift
+    │   └── storytelling_warm.cube      — warm, inviting
+    │
+    ├── AI selects LUT based on font_category (already chosen in Phase 3)
+    │   → Same AI decision drives: font + animation + color grade = unified look
+    │
+    └── Apply LUT to all images uniformly (OpenCV / Pillow)
+    
+    APPROACH 2: Reference-Based Transfer (adaptive)
+    ├── Pick "hero image" — the best-scored image from Phase 6A
+    ├── Transfer its color palette to all other images
+    │   → Method: Reinhard color transfer (mean/std matching in LAB space)
+    │   → Or: histogram matching per channel
+    └── Preserves scene-specific details while unifying the palette
+    
+    COMBINED (recommended):
+    1. Apply mood-appropriate LUT to all images
+    2. Then Reinhard-normalize to reduce remaining outliers
+    3. Result: all images share a consistent cinematic look
+    
+    Stored in DB: jobs.color_grade_config (JSON)
+    """
+    
+    # LUT mapping — same categories as fonts
+    LUT_MAP = {
+        "formal_news":   "documentary_neutral.cube",
+        "dramatic":      "dramatic_teal_orange.cube",
+        "historical":    "historical_sepia_warm.cube",
+        "modern_tech":   "tech_cyberpunk.cube",
+        "islamic":       "islamic_warm_gold.cube",
+        "military":      "military_cold_steel.cube",
+        "editorial":     "editorial_clean.cube",
+        "storytelling":  "storytelling_warm.cube",
+    }
+    
+    def grade_all_images(self, job_id: str) -> list[str]:
+        """
+        1. Get font_category from job config
+        2. Select LUT
+        3. Apply to all scene images
+        4. Reinhard normalize to hero image
+        5. Save graded images (preserve originals)
+        """
+        pass
+    
+    def grade_thumbnail(self, thumbnail_path: str, job_id: str) -> str:
+        """Apply same grade to thumbnails — brand consistency."""
+        pass
+```
+
+### 4.11 Intelligent Transition System (`src/phase5_production/transition_engine.py`)
+
+```python
+"""
+AI-driven transition selection between scenes.
+NOT just crossfade everywhere — transitions convey meaning.
+
+Runs during Phase 3 (Script) — Qwen 72B analyzes scene pairs
+and assigns transitions. Stored in scenes.transition_type (already in DB).
+"""
+
+# Transition library
+TRANSITIONS = {
+    # ─── Hard cuts ───
+    "cut":              {"ffmpeg": "-filter_complex '[0][1]concat'",
+                         "when": "same location, continuous action, tension"},
+    "smash_cut":        {"ffmpeg": "instant cut + audio spike",
+                         "when": "sudden contrast, shock, humor"},
+    
+    # ─── Soft transitions ───
+    "crossfade":        {"ffmpeg": "xfade=transition=fade:duration=0.5",
+                         "when": "gentle scene change, related topics"},
+    "dissolve":         {"ffmpeg": "xfade=transition=dissolve:duration=1.0",
+                         "when": "time passing, dream-like, memory"},
+    
+    # ─── Directional ───
+    "wipe_left":        {"ffmpeg": "xfade=transition=wipeleft:duration=0.5",
+                         "when": "geographic movement, timeline progression"},
+    "slide_up":         {"ffmpeg": "xfade=transition=slideup:duration=0.4",
+                         "when": "escalation, revelation, new chapter"},
+    
+    # ─── Dramatic ───
+    "fade_black":       {"ffmpeg": "fade=out → black 1s → fade=in",
+                         "when": "major time skip, chapter break, death/ending"},
+    "fade_white":       {"ffmpeg": "fade=out:color=white → fade=in",
+                         "when": "flashback, divine/spiritual, revelation"},
+    
+    # ─── Modern/Dynamic ───
+    "zoom_in":          {"ffmpeg": "zoompan + xfade",
+                         "when": "focusing on detail, narrowing scope"},
+    "zoom_out":         {"ffmpeg": "zoompan reverse + xfade",
+                         "when": "revealing bigger picture, broadening scope"},
+    "glitch_cut":       {"ffmpeg": "RGB shift frames + cut",
+                         "when": "tech content, conspiracy, digital theme"},
+}
+
+
+class TransitionSelector:
+    """
+    Qwen 72B analyzes adjacent scene pairs → selects optimal transition.
+    
+    Prompt per scene pair:
+    ┌────────────────────────────────────────────────────┐
+    │ Scene {N}: "{narration_summary}" — mood: {mood}   │
+    │ Scene {N+1}: "{narration_summary}" — mood: {mood} │
+    │                                                    │
+    │ Relationship: {same_topic|new_topic|time_skip|     │
+    │               flashback|contrast|escalation}       │
+    │                                                    │
+    │ Select transition and duration (0.3s-2.0s).       │
+    │ Available: {list transitions with 'when' hints}    │
+    └────────────────────────────────────────────────────┘
+    
+    Fallback rules (if LLM fails):
+    ├── Same mood → crossfade 0.5s
+    ├── Mood change → dissolve 1.0s  
+    ├── Time skip → fade_black 1.5s
+    ├── Tension build → cut (instant)
+    └── Chapter break → fade_black 2.0s
+    """
+    pass
+```
+
+### 4.12 Music-Scene Sync System (`src/phase5_production/music_scene_sync.py`)
+
+```python
+"""
+Dynamic music that adapts to scene moods.
+Instead of ONE track for the whole video → segmented music per mood zone.
+
+Pipeline:
+1. Phase 3 (Script): Group consecutive scenes by mood → "mood zones"
+2. Phase 5 (Music): Generate one MusicGen track per mood zone
+3. Phase 5 (Compose): Crossfade between music tracks at zone transitions
+"""
+
+class MusicSceneSync:
+    """
+    Step 1: Mood Zone Detection (during Script phase)
+    ─────────────────────────────────────────────────
+    Group consecutive scenes with same/similar mood:
+    
+    Scene 1: tense     ┐
+    Scene 2: tense     ├── Zone A: "tense" (45s)
+    Scene 3: dramatic  ┘
+    Scene 4: hopeful   ┐
+    Scene 5: hopeful   ├── Zone B: "hopeful" (30s)
+    Scene 6: calm      ┘
+    Scene 7: dramatic  ┐
+    Scene 8: climax    ├── Zone C: "dramatic_climax" (50s)
+    Scene 9: dramatic  ┘
+    Scene 10: reflective ── Zone D: "reflective" (20s)
+    
+    Mood compatibility groups (can share one track):
+    ├── {tense, dramatic, suspenseful}
+    ├── {hopeful, inspiring, triumphant}
+    ├── {calm, reflective, peaceful}
+    ├── {sad, somber, melancholy}
+    └── {exciting, energetic, climactic}
+    
+    Step 2: Per-Zone Music Generation
+    ─────────────────────────────────
+    MusicGen prompt per zone:
+    - Zone A: "tense documentary background music, minor key, sparse, 45 seconds"
+    - Zone B: "hopeful uplifting background, major key, gentle strings, 30 seconds"
+    - Zone C: "dramatic climax orchestral, building intensity, 50 seconds"
+    - Zone D: "reflective calm piano, peaceful outro, 20 seconds"
+    
+    Step 3: Zone Crossfades (during Compose)
+    ─────────────────────────────────────────
+    Between zones: 2-3 second crossfade
+    FFmpeg: amerge + volume automation
+    Music ducking still applies during narration.
+    
+    DB: mood_zones table
+    ├── job_id, zone_index, mood, start_scene, end_scene
+    ├── duration_sec, music_prompt, music_path
+    └── crossfade_in_sec, crossfade_out_sec
+    """
+    pass
+```
+
+### 4.13 Pacing Analyzer (`src/phase3_script/pacing_analyzer.py`)
+
+```python
+"""
+Analyzes and optimizes video pacing/rhythm.
+Runs during Phase 3 (Script) — adjusts scene durations BEFORE production.
+
+Problem: Uniform scene durations = boring. Viewers feel the monotony.
+Solution: Vary duration based on content complexity + emotional arc.
+"""
+
+class PacingAnalyzer:
+    """
+    RULES (based on documentary editing best practices):
+    
+    1. SCENE DURATION GUIDELINES:
+    ├── Hook/intro: 3-5s (fast, grab attention)
+    ├── Context/setup: 8-12s (establish the topic)
+    ├── Complex explanation: 12-20s (give time to absorb)
+    ├── Emotional peak: 5-8s (intense, impactful)
+    ├── Visual showcase: 6-10s (let visuals breathe)
+    ├── Transition/bridge: 3-5s (connecting scenes)
+    └── Conclusion/reflection: 10-15s (slow, thoughtful)
+    
+    2. RHYTHM PATTERNS (tempo mapping):
+    ├── Start: medium pace → hook the viewer
+    ├── Build: gradually longer scenes → establish depth  
+    ├── Peak: short, rapid scenes → climax energy
+    ├── Valley: longer scenes → emotional breathing room
+    └── End: medium → conclusion, satisfying close
+    
+    3. ANTI-MONOTONY RULES:
+    ├── No 3+ consecutive scenes with same duration (±2s)
+    ├── Duration ratio between adjacent scenes: max 3:1
+    ├── Every 2-3 minutes: at least one "pace change" (±50% duration shift)
+    └── Total video pacing score: variance of durations should be > threshold
+    
+    4. CONTENT-BASED ADJUSTMENTS (Qwen 72B):
+    ├── Scene has statistics/data → +3s (reader needs time)
+    ├── Scene has emotional quote → +2s (let it land)
+    ├── Scene is visual transition → -3s (keep moving)
+    ├── Scene follows a climax → -2s (maintain energy)
+    └── Scene introduces new concept → +4s (comprehension time)
+    """
+    
+    def analyze_and_adjust(self, scenes: list[dict]) -> list[dict]:
+        """
+        Input: scenes with initial durations from script
+        Output: scenes with optimized durations + pacing_notes
+        
+        Process:
+        1. Classify each scene type (hook/setup/peak/valley/conclusion)
+        2. Apply duration guidelines
+        3. Check rhythm patterns
+        4. Apply anti-monotony rules
+        5. Content-based fine-tuning (Qwen 72B)
+        6. Validate total duration within target range
+        """
+        pass
+    
+    def get_pacing_score(self, scene_durations: list[float]) -> float:
+        """
+        Score 0-10 for pacing quality.
+        Based on: duration variance, rhythm patterns, anti-monotony compliance.
+        """
+        pass
+```
+
+### 4.14 Vision Before/After Comparison (`src/phase6_visual_qa/regen_comparator.py`)
+
+```python
+"""
+When Phase 6 regenerates an image/video, send BOTH versions to Telegram
+for comparison. Yusif sees the improvement (or lack thereof).
+"""
+
+class RegenComparator:
+    """
+    Triggers when: image or video is regenerated (attempt_number > 1)
+    
+    Telegram output:
+    ┌──────────────────────────────────────────────────────┐
+    │ 🔄 Scene 5 — Regenerated (attempt 2)                │
+    │                                                      │
+    │ [BEFORE image]        [AFTER image]                  │
+    │ Score: 4.2/10         Score: 8.1/10                  │
+    │                                                      │
+    │ ❌ Before issues:     ✅ After improvements:         │
+    │ - Extra fingers       - Clean anatomy                │
+    │ - Low semantic match  - Matches narration            │
+    │ - Text detected       - No text                      │
+    │                                                      │
+    │ 📝 Prompt changes:                                   │
+    │ - Added: "five fingers on each hand"                 │
+    │ - Removed: "crowded scene"                           │
+    │ - Negative added: "deformed hands, extra digits"     │
+    │                                                      │
+    │ [✅ Accept] [🔄 Try Again] [✏️ Edit Prompt]         │
+    └──────────────────────────────────────────────────────┘
+    
+    For videos:
+    - Send both clips side-by-side (or sequential with labels)
+    - Include keyframe comparison
+    
+    Stored in qa_rubrics: both attempts are already stored,
+    this just presents them comparatively.
+    """
+    
+    def send_comparison(self, job_id: str, scene_index: int, 
+                        asset_type: str) -> None:
+        """
+        1. Get rubric for attempt N-1 and attempt N
+        2. Build side-by-side comparison
+        3. Send via Telegram with inline buttons
+        """
+        pass
+```
+
+### 4.15 Dynamic Intro/Outro System (`src/phase5_production/intro_outro.py`)
+
+```python
+"""
+Dynamic intro/outro that adapts to video content.
+NOT a static template — varies per video type.
+
+Method: Pre-rendered intro/outro TEMPLATES with customizable elements.
+Templates are transparent video layers (like text animations).
+"""
+
+class IntroOutroEngine:
+    """
+    INTRO VARIANTS (by content type — matched to font_category):
+    
+    formal_news:
+    ├── Style: News broadcast open — logo + title slide + date
+    ├── Animation: Clean slide-in, professional
+    ├── Duration: 3-4s
+    └── Music: Short news sting (pre-made, stored in assets/)
+    
+    dramatic:
+    ├── Style: Dark reveal — smoke/particles + logo emerge from darkness
+    ├── Animation: Slow fade from black, dramatic lighting
+    ├── Duration: 5-6s
+    └── Music: Low drone → hit
+    
+    historical:
+    ├── Style: Parchment/aged paper unfold → title appears in classical font
+    ├── Animation: Paper texture, ink writing effect
+    ├── Duration: 4-5s
+    └── Music: Classical oud or piano
+    
+    modern_tech:
+    ├── Style: Digital grid/HUD → logo glitch-in
+    ├── Animation: Matrix-style, circuit board patterns
+    ├── Duration: 3-4s
+    └── Music: Electronic pulse
+    
+    islamic:
+    ├── Style: Geometric Islamic pattern → expands to reveal title
+    ├── Animation: Arabesque pattern growth, elegant
+    ├── Duration: 4-5s
+    └── Music: Gentle nasheed or oud
+    
+    military:
+    ├── Style: Tactical map → zoom to title, military stencil font
+    ├── Animation: Sharp, decisive movements
+    ├── Duration: 3-4s
+    └── Music: Military drum cadence
+    
+    OUTRO (universal structure, styled per category):
+    ├── Subscribe CTA (animated, language-matched)
+    ├── Next video suggestion (from content_calendar)
+    ├── Channel logo + social links
+    ├── Duration: 8-12s (YouTube end screen compatible)
+    └── End screen zones: 2 video suggestions + subscribe button
+    
+    IMPLEMENTATION:
+    ├── Templates: After Effects → export as PNG sequences + JSON config
+    │   OR: Generated programmatically (PyCairo, same as text animations)
+    ├── Customization per video:
+    │   → Title text (rendered in matching font)
+    │   → Date (for news)
+    │   → Episode number (for series)
+    │   → Colors (from brand_kit)
+    └── Composited by VideoComposer (FFmpeg overlay at start/end)
+    """
+    pass
+```
+
+### 4.16 Scene Duration Optimizer (`src/phase3_script/scene_duration_optimizer.py`)
+
+```python
+"""
+Adjusts individual scene durations based on visual complexity + narration length.
+Companion to PacingAnalyzer — this handles per-scene optimization.
+
+Runs AFTER voice generation (we now know exact narration duration per scene).
+"""
+
+class SceneDurationOptimizer:
+    """
+    INPUTS:
+    ├── Narration audio duration per scene (from Fish Speech)
+    ├── Visual complexity score (from FLUX prompt analysis)
+    ├── Scene type (action, dialogue, visual showcase, data display)
+    ├── Text overlay amount (more text = more reading time needed)
+    └── Emotional weight (from emotional_arc agent)
+    
+    RULES:
+    1. Scene duration ≥ narration duration + 0.5s (breathing room)
+    2. Scenes with text overlay: add (word_count / 3) seconds reading time
+    3. Data/statistics scenes: add 3s minimum for comprehension
+    4. After emotional peak: add 1-2s "landing" time (let it sink in)
+    5. Visual showcase (beautiful landscape): can extend 2-3s beyond narration
+    6. Rapid montage scenes: can be shorter than narration (audio continues over next scene)
+    
+    OUTPUT:
+    Updated scene durations → affects:
+    ├── LTX video clip length
+    ├── Text overlay timing
+    ├── Music zone durations
+    └── Transition timing
+    """
+    pass
+```
+
+### 4.17 Subtitle Style Matching (`src/phase8_publish/subtitle_styler.py`)
+
+```python
+"""
+SRT subtitles styled to match the video's font + color selection.
+YouTube supports styled subtitles via .ass (Advanced SubStation Alpha) format.
+
+Currently: plain SRT → YouTube default white text.
+After: .ass with matching font, colors, and positioning.
+"""
+
+class SubtitleStyler:
+    """
+    Takes: SRT content + FontAnimationConfig (from Phase 3 AI selection)
+    Produces: .ass file with styled subtitles
+    
+    .ass file structure:
+    ├── [Script Info]: resolution, title
+    ├── [V4+ Styles]: font name, size, colors, outline, shadow
+    └── [Events]: timed subtitle lines with style reference
+    
+    Style mapping:
+    ├── Font: same primary_font as text overlays
+    ├── Size: 52px (readable at 1080p)
+    ├── Primary color: white or text_color from config
+    ├── Outline: 2px black (readability)
+    ├── Shadow: 1px (depth)
+    ├── Position: bottom-center (YouTube standard)
+    ├── Margin: 30px from bottom (above YouTube controls)
+    └── Alignment: center (or right-aligned for Arabic if RTL mode)
+    
+    BONUS — Accent styling:
+    ├── Key words/names: accent_color from config
+    ├── Quotes: italic + accent_color
+    ├── Numbers/statistics: bold
+    └── Foreign words: different style tag
+    
+    Output: .ass file uploaded to YouTube as closed captions
+    (fallback: .srt if .ass upload fails)
+    """
+    pass
+```
+
+### 4.18 Thumbnail Font Matching (`src/phase8_publish/thumbnail_gen.py`)
+
+```python
+"""
+Thumbnail text uses the SAME font_category selected for the video.
+Visual brand consistency: video overlays + subtitles + thumbnail = unified look.
+
+ALREADY in thumbnail_gen.py — this is the integration note:
+"""
+
+class ThumbnailGenerator:
+    """
+    Enhancement: Font consistency across all text elements.
+    
+    When generating thumbnail text:
+    ├── Load FontAnimationConfig from job
+    ├── Use accent_font (not primary — thumbnails need bolder fonts)
+    ├── Use accent_color for emphasis text
+    ├── Apply same background_style (box/gradient/blur)
+    └── Apply same color_grade LUT to thumbnail
+    
+    Result: Viewer sees thumbnail → clicks → video has same visual identity
+    = professional, branded, trustworthy
+    
+    Implementation:
+    ├── FLUX generates base image (no text in FLUX prompt)
+    ├── Apply color grade LUT
+    ├── PyCairo renders text in accent_font + accent_color
+    ├── Add background treatment (same as video overlays)
+    └── Final: thumbnail matches video aesthetic perfectly
+    """
+    pass
+```
+
+---
+
 ## 5. Database (`src/core/database.py`)
 
 ```python
@@ -3254,8 +3947,9 @@ Output: YouTube upload + Shorts + SRT
 APIs:   YouTube Data API v3
 
 Files to build:
-├── thumbnail_gen.py       → FLUX generates 3 variants (GPU Slot 9)
+├── thumbnail_gen.py       → FLUX generates 3 variants + font matching (§4.18)
 ├── thumbnail_qa.py        → Full 3-layer QA on thumbnails (see below)
+├── subtitle_styler.py     → .ass styled subtitles matching video font (§4.17)
 ├── seo_assembler.py       → Combine: title + desc + tags + timestamps + hashtags
 ├── subtitle_gen.py        → SRT from scene narration text + timing
 ├── uploader.py            → YouTube API: upload video, set metadata, add captions
@@ -3626,6 +4320,8 @@ BUILD:
 10. src/phase3_script/writer.py
 11. src/phase3_script/reviewer.py
 12. src/phase3_script/splitter.py
+13. src/phase3_script/pacing_analyzer.py
+14. src/phase3_script/scene_duration_optimizer.py
 
 TEST: topic → SEO → script → scenes.json ✓
 ```

@@ -247,6 +247,25 @@ Write a complete, reviewed, fact-checked script divided into timed scenes. Uses 
 - `expected_visual_elements` — used by Phase 6 (Visual QA) to verify images
 - **Output:** JSON array of 40-80 scenes
 
+#### 3.5 Visual Identity Decision (AI — single decision drives everything)
+- Qwen 72B reads the complete script and makes ONE unified styling decision:
+  - **Font category** → selects from 8 Arabic font families
+  - **Animation style** → entry/exit/persistent animations for text overlays
+  - **Color grade** → cinematic LUT for all images + thumbnails
+  - **Intro/outro style** → matching intro template
+  - **Transition defaults** → transition preferences for this content type
+  - **Music mood zones** → groups scenes by mood for segmented soundtrack
+  - **Subtitle styling** → .ass format with matching font/colors
+- This ONE decision creates a **unified visual identity** across:
+  - Text overlays, thumbnails, subtitles, intro/outro, color grade, transitions
+  - Stored in DB as `FontAnimationConfig` (JSON), referenced by all downstream phases
+
+#### 3.6 Pacing Analyzer
+- Classifies each scene type (hook, setup, explanation, peak, conclusion)
+- Applies rhythm mapping: medium → build → rapid peak → valley → medium end
+- Anti-monotony rules: no 3+ consecutive same-duration scenes
+- Output: adjusted scene durations (overrides initial estimates)
+
 ### Tech Stack
 - LLM: Qwen 2.5 72B (local via Ollama) — all script tasks
 - Web search for research
@@ -1036,6 +1055,105 @@ Generate all media assets — images, video clips, voice, music, SFX — and com
      - Audio: AAC 320kbps
      - Format: MP4
 - **Output:** Final video MP4 → goes to Phase 7
+
+#### 5.7 Color Grading (CPU — after FLUX, before LTX)
+- **Problem:** FLUX generates each image independently → inconsistent colors across scenes
+- **Solution:** Unified cinematic color grade across all images
+- **Method:**
+  1. **LUT selection:** Same AI that picks fonts picks the matching LUT:
+     - formal_news → documentary_neutral (clean, slightly desaturated)
+     - dramatic → teal_orange (Hollywood look)
+     - historical → sepia_warm (aged, warm feel)
+     - modern_tech → cyberpunk (high saturation, neon)
+     - islamic → warm_gold (golden, elegant tones)
+     - military → cold_steel (blue-grey, harsh)
+  2. **Apply LUT** to all scene images uniformly (OpenCV)
+  3. **Reinhard normalize** to "hero image" (best-scored from Phase 6A) — reduces remaining color outliers
+  4. Same LUT applied to **thumbnails** — brand consistency
+- **One AI decision (Phase 3) drives:** font + animation + color grade + intro style = unified video identity
+
+#### 5.8 Intelligent Transitions (AI-selected)
+- **Problem:** All crossfades = monotonous, doesn't convey meaning
+- **Solution:** Qwen 72B analyzes each scene pair → selects meaningful transition
+- **Transition library:**
+  | Transition | When to Use |
+  |-----------|------------|
+  | Cut (instant) | Same location, tension, continuous action |
+  | Crossfade (0.5s) | Gentle topic change, related scenes |
+  | Dissolve (1.0s) | Time passing, memory, dream-like |
+  | Fade to black (1.5s) | Major time skip, chapter break |
+  | Fade to white | Flashback, spiritual, revelation |
+  | Slide/wipe | Geographic movement, timeline |
+  | Zoom in | Narrowing focus, detail emphasis |
+  | Glitch cut | Tech content, digital theme, conspiracy |
+- **Fallback rules** if LLM fails: mood change → dissolve, tension → cut, time skip → fade black
+
+#### 5.9 Music-Scene Sync (Dynamic Soundtrack)
+- **Problem:** ONE MusicGen track for entire video = mood disconnect
+- **Solution:** Group scenes into "mood zones" → generate one music track per zone
+- **Process:**
+  1. Phase 3 groups consecutive same-mood scenes into zones:
+     - Scenes 1-3 (tense) → Zone A: "tense, 45s"
+     - Scenes 4-6 (hopeful) → Zone B: "hopeful, 30s"
+     - Scenes 7-9 (climax) → Zone C: "dramatic climax, 50s"
+  2. MusicGen generates one track per zone with zone-specific prompt
+  3. VideoComposer crossfades between zone tracks (2-3s overlap)
+  4. Music ducking still applies during all narration
+- **Mood compatibility groups** (can share track): {tense,dramatic}, {hopeful,inspiring}, {calm,reflective}
+
+#### 5.10 Dynamic Intro/Outro
+- **Problem:** Static template = every video looks the same in first 5 seconds
+- **Solution:** Intro/outro style matches font_category:
+  | Type | Intro Style | Duration |
+  |------|------------|----------|
+  | Formal/News | Logo + title slide + date, professional slide-in | 3-4s |
+  | Dramatic | Dark reveal, smoke/particles, logo from darkness | 5-6s |
+  | Historical | Parchment unfold, ink writing effect | 4-5s |
+  | Modern/Tech | Digital grid/HUD, logo glitch-in | 3-4s |
+  | Islamic | Geometric arabesque pattern → expands to title | 4-5s |
+  | Military | Tactical map zoom → military stencil title | 3-4s |
+- **Outro** (universal): Subscribe CTA + next video suggestion + channel logo (8-12s, YouTube end screen compatible)
+- **Implementation:** PyCairo-generated (same as text animations) or pre-rendered template sequences
+
+#### 5.11 Pacing & Scene Duration Optimization
+- **Problem:** Uniform scene durations = boring; viewers feel monotony subconsciously
+- **Solution:** Two systems working together:
+
+**Pacing Analyzer (Phase 3):**
+- Classifies scenes: hook (3-5s), setup (8-12s), explanation (12-20s), emotional peak (5-8s), conclusion (10-15s)
+- Rhythm mapping: start medium → build longer → peak short/rapid → valley long → end medium
+- Anti-monotony: no 3+ scenes at same duration, max 3:1 ratio between adjacent scenes
+
+**Scene Duration Optimizer (after voice generation):**
+- Adjusts based on actual narration audio length (we now know exact timing)
+- Scene ≥ narration + 0.5s breathing room
+- Text overlay scenes: add (word_count / 3)s reading time
+- Data/statistics: +3s comprehension time
+- After emotional peak: +1-2s "landing" time
+- Visual showcase: can extend 2-3s beyond narration
+
+#### 5.12 Audio QA (inline after each audio step)
+- **Problem:** Images/video have 3-layer QA. Audio has NOTHING. Audio = 50% of quality.
+- **Solution:** QA checks after each audio generation step:
+
+**Voice QA:**
+- **Deterministic:** silence gaps, clipping, SNR, duration match, RMS consistency
+- **Whisper STT verification:** transcribe generated audio → compare vs script → Word Error Rate (WER > 15% = pronunciation problem)
+- **Arabic-specific:** ع vs أ confusion, ح vs ه confusion, tashkeel pronunciation, name pronunciation
+- **Prosody:** pitch contour (monotone detection), speaking rate variation, emotion match vs scene tag
+- **Bonus:** extracts word-level timestamps for word-by-word text animation sync
+
+**Music QA:**
+- Duration, Content ID, clipping, silence, volume level (-18 to -24 LUFS for background)
+- Mood analysis: librosa features (tempo, key, energy) vs scene mood tag
+- Transition smoothness between mood zones
+
+**Mix QA (after compose):**
+- Voice intelligibility: Whisper on mixed audio, WER shouldn't increase >5% vs isolated
+- Music ducking: -12dB to -18dB ratio during speech
+- SFX timing: no overlap with key narration
+- Overall loudness: -14 LUFS (YouTube target), true peak < -1 dBTP
+- A/V sync drift check
 
 ### GPU Memory Management System (CRITICAL) 🧠
 
@@ -2573,6 +2691,15 @@ Better to miss a subtle issue than give false confidence.
   - Scene number, narration text, QA score, missing elements
 - Summary message with inline buttons: `[Approve All] [Regenerate Failed] [View Details]`
 
+#### 6A.5 Before/After Comparison (on regeneration)
+- When an image is regenerated, send **BOTH versions** to Telegram:
+  - Original image + score + issues list
+  - Regenerated image + new score + improvements
+  - Prompt changes highlighted (what was added/removed/modified)
+  - Inline buttons: `[✅ Accept] [🔄 Try Again] [✏️ Edit Prompt]`
+- Same treatment for video clips after regen
+- Both versions stored in `qa_rubrics` (attempt_number tracks which try)
+
 ### Gate 6A
 ```
 IF >90% images pass (score ≥ 7) → proceed to LTX video generation
@@ -2735,7 +2862,11 @@ Optimize and publish videos to YouTube with maximum discoverability.
   - Resolution: 1280x720
   - Use channel-specific templates/style
   - **Uses best-performing title from Phase 2**
-- **Text overlay:** Pillow/PIL for Arabic text rendering
+- **Text overlay:** PyCairo for Arabic text rendering (same engine as video overlays)
+  - Uses **accent_font** from FontAnimationConfig (bolder than primary for thumbnails)
+  - Same **accent_color** and **background_style** as video overlays
+  - Same **color grade LUT** applied to thumbnail image
+  - Result: viewer sees thumbnail → clicks → video has SAME visual identity = professional, branded
 - **Selection:** Full 3-layer QA (same rigor as scene images):
   - **Layer 1 (Deterministic):** Resolution, file size, face detection, mobile readability simulation (downscale to 168x94 → OCR), color vibrancy, YouTube dead zone check (duration badge area), competitor similarity (CLIP embeddings)
   - **Layer 2 (Vision Rubric):** Click appeal, topic relevance, mobile readability, emotional impact, professionalism, differentiation (show competitor thumbnails alongside) — 6 axes, each with score + reasoning + confidence
@@ -2760,13 +2891,17 @@ Optimize and publish videos to YouTube with maximum discoverability.
   - Sources section (from research phase)
   - Standard channel links and branding text
 
-#### 8.2.5 Subtitle Generator (SRT) — Local AI Agent
-- **Auto-generate SRT** from the original script text (already have exact narration per scene)
-- Sync timestamps from scene durations + voice audio timing
+#### 8.2.5 Styled Subtitle Generator — Local AI Agent
+- **Auto-generate .ass** (Advanced SubStation Alpha) instead of plain SRT
+- **Font matching:** Same primary_font and colors from AI font selection (Phase 3)
+  - Font, size (52px at 1080p), outline (2px black), shadow (1px)
+  - Accent styling: key words/names in accent_color, quotes in italic, numbers bold
+- Sync timestamps from voice audio timing (word-level from Fish Speech)
 - Arabic subtitles (MSA) — clean, accurate, already written
 - Optional: English translated subtitles (via local Qwen 2.5 72B translation)
-- **All processing local** — no API calls needed (text already exists, just formatting + timing)
+- **All processing local** — no API calls needed
 - Upload as closed captions to YouTube — **massive SEO boost** (YouTube Arabic auto-captions are poor)
+- Fallback: if .ass upload fails → generate plain .srt
 - Embed burn-in subtitles option for social media clips (Shorts, Reels)
 
 #### 8.3 YouTube Publisher
