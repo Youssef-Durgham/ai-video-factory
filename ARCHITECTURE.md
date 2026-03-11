@@ -142,7 +142,11 @@ ai-video-factory/
 │   │   ├── gpu_logger.py           # GPU precision logging (see §6)
 │   │   ├── scheduler.py            # Job scheduler (APScheduler)
 │   │   ├── telegram_bot.py         # Telegram notifications + interactive
-│   │   └── retry.py                # Retry/backoff logic
+│   │   ├── retry_engine.py         # Per-service retry + backoff (§12.5.2)
+│   │   ├── asset_versioner.py      # Asset version control (§12.5.3)
+│   │   ├── quota_tracker.py        # YouTube API quota tracking (§12.5.4)
+│   │   ├── storage_manager.py      # Disk cleanup + archival (§12.5.1)
+│   │   └── watchdog.py             # Service health monitor (§12.5.5)
 │   │
 │   ├── phase1_research/
 │   │   ├── __init__.py
@@ -1062,6 +1066,18 @@ class EventType(str, Enum):
     # Content ID
     CONTENT_ID_SAFE       = "content_id.safe"
     CONTENT_ID_CLAIMED    = "content_id.claimed"
+    
+    # Operational
+    SERVICE_UNHEALTHY     = "ops.service_unhealthy"
+    SERVICE_RESTARTED     = "ops.service_restarted"
+    QUOTA_LOW             = "ops.quota_low"
+    QUOTA_EXHAUSTED       = "ops.quota_exhausted"
+    DISK_LOW              = "ops.disk_low"
+    STORAGE_CLEANED       = "ops.storage_cleaned"
+    ASSET_VERSIONED       = "ops.asset_versioned"
+    ASSET_ROLLED_BACK     = "ops.asset_rolled_back"
+    RETRY_ATTEMPTED       = "ops.retry_attempted"
+    RETRY_EXHAUSTED       = "ops.retry_exhausted"
 
 
 @dataclass
@@ -4471,6 +4487,830 @@ python -m src.cli run --topic "test" --channel documentary_ar  # Full test
 | Notifications | Telegram (not email/SMS) | Instant, interactive (inline buttons), free, Yusif already uses it |
 | Phase 9 | Cron-based (not inline) | Analytics data isn't available immediately — needs 24h+ delay |
 | Manual review | Selective (not always) | High-quality videos auto-publish; only flag edge cases |
+
+---
+
+## 12.5 Operational Infrastructure
+
+### 12.5.1 Storage Manager (`src/core/storage_manager.py`)
+
+> **Problem:** Each video produces ~5-10GB intermediate files. 10 videos = 50-100GB.
+> Without cleanup, disk fills in days.
+
+```python
+"""
+Manages disk space across the entire pipeline.
+Policies: what to keep, what to archive, what to delete, and when.
+"""
+
+class StorageManager:
+    """
+    STORAGE LAYOUT PER JOB:
+    output/
+    └── job_20260315_120000/
+        ├── images/                    # FLUX outputs
+        │   ├── scene_001_v1.png       # Version 1 (original)
+        │   ├── scene_001_v2.png       # Version 2 (regen)
+        │   ├── scene_001_final.png    # Symlink → best version
+        │   └── ...
+        ├── images_graded/             # After color grading
+        ├── videos/                    # LTX clips
+        │   ├── scene_001_v1.mp4
+        │   └── scene_001_final.mp4
+        ├── audio/
+        │   ├── voice/                 # Fish Speech outputs
+        │   ├── music/                 # MusicGen per mood zone
+        │   └── sfx/                   # AudioGen outputs
+        ├── overlays/                  # Animated text layers (ProRes)
+        ├── compose/                   # FFmpeg intermediate
+        │   ├── composed_v1.mp4        # Before overlay QA fix
+        │   └── composed_final.mp4
+        ├── thumbnails/                # 3 variants
+        ├── subtitles/                 # .ass + .srt
+        ├── final/
+        │   ├── final.mp4              # THE published video
+        │   └── final_metadata.json    # YouTube metadata
+        ├── qa/                        # QA artifacts
+        │   ├── keyframes/             # Extracted for vision QA
+        │   └── reports/               # Per-scene QA JSONs
+        └── logs/                      # Job-specific logs
+    
+    CLEANUP POLICIES:
+    ─────────────────
+    """
+    
+    # What to keep permanently
+    KEEP_FOREVER = [
+        "final/final.mp4",            # The published video
+        "final/final_metadata.json",   # Metadata
+        "thumbnails/*_final.*",        # Winning thumbnail
+        "subtitles/*.ass",             # Subtitles
+    ]
+    
+    # What to archive (compress → cold storage) after 7 days
+    ARCHIVE_AFTER_7D = [
+        "images/*_final.png",          # Final scene images (useful for repurpose)
+        "audio/voice/*.wav",           # Voice tracks (re-composable)
+        "qa/reports/*.json",           # QA data (for Phase 9 learning)
+    ]
+    
+    # What to delete after 3 days (post-publish, QA passed)
+    DELETE_AFTER_3D = [
+        "images/*_v[0-9]*.png",        # Non-final image versions
+        "images_graded/",              # Graded intermediates
+        "videos/*_v[0-9]*.mp4",        # Non-final video versions
+        "overlays/",                   # Text animation layers
+        "compose/*_v[0-9]*.mp4",       # Non-final compositions
+        "qa/keyframes/",               # Vision QA keyframes
+    ]
+    
+    # What to delete immediately after compose
+    DELETE_AFTER_COMPOSE = [
+        "overlays/*.mov",              # ProRes text layers (huge files, 500MB+)
+    ]
+    
+    def cleanup_job(self, job_id: str, policy: str = "post_publish"):
+        """
+        Run cleanup for a job.
+        Policies: 'post_compose' | 'post_publish' | 'archive' | 'full_clean'
+        
+        Called by:
+        - PipelineRunner after COMPOSE → delete overlay MOVs
+        - Cron job daily → apply 3-day and 7-day policies
+        - Manual → full_clean (keeps only KEEP_FOREVER)
+        """
+        pass
+    
+    def get_disk_usage(self) -> dict:
+        """
+        Returns: {
+            total_gb: float,
+            by_job: {job_id: size_gb},
+            by_type: {images: gb, videos: gb, audio: gb, overlays: gb},
+            oldest_uncleaned_job: str,
+            estimated_days_until_full: float
+        }
+        """
+        pass
+    
+    def emergency_cleanup(self, target_free_gb: float = 50):
+        """
+        When disk is critically low:
+        1. Delete all DELETE_AFTER_3D for ALL jobs (not just old ones)
+        2. Archive all ARCHIVE_AFTER_7D immediately
+        3. If still not enough → alert Yusif via Telegram
+        """
+        pass
+
+
+# ═══ SETTINGS.YAML ═══
+# storage:
+#   output_dir: "output/"
+#   archive_dir: "archive/"           # Compressed archives
+#   max_disk_usage_gb: 500            # Alert threshold
+#   emergency_free_gb: 50             # Emergency cleanup trigger
+#   cleanup_schedule: "0 3 * * *"     # Daily at 3 AM
+#   archive_compression: "zstd"       # Fast compression
+#   keep_versions: 2                  # Keep last N versions of regen assets
+```
+
+### 12.5.2 Retry & Backoff Strategy (`src/core/retry_engine.py`)
+
+```python
+"""
+Comprehensive retry strategy for every external dependency.
+Each service has its own failure mode → needs its own retry policy.
+"""
+
+from dataclasses import dataclass
+from enum import Enum
+
+
+class FailureType(str, Enum):
+    TIMEOUT      = "timeout"          # Service didn't respond in time
+    OOM          = "oom"              # GPU out of memory
+    CRASH        = "crash"            # Service crashed/exited
+    BAD_OUTPUT   = "bad_output"       # Service responded but output is garbage
+    HUNG         = "hung"             # Service is alive but not responding
+    RATE_LIMIT   = "rate_limit"       # API quota exceeded
+    NETWORK      = "network"          # Network/connection error
+
+
+@dataclass
+class RetryPolicy:
+    max_retries: int
+    initial_delay_sec: float
+    backoff_multiplier: float        # Exponential backoff
+    max_delay_sec: float
+    timeout_sec: float               # Per-attempt timeout
+    on_exhaust: str                   # "block" | "skip" | "fallback" | "alert"
+    fallback_action: str = None      # What to do if retries exhausted
+
+
+# ═══ PER-SERVICE RETRY POLICIES ═══
+
+RETRY_POLICIES = {
+    # ─── Ollama (Qwen 72B, Qwen2.5-VL) ───
+    "ollama": RetryPolicy(
+        max_retries=3,
+        initial_delay_sec=10,
+        backoff_multiplier=2.0,        # 10s → 20s → 40s
+        max_delay_sec=60,
+        timeout_sec=300,               # 5 min per generation
+        on_exhaust="block",
+        # Recovery: restart Ollama service
+        # subprocess.run(["systemctl", "restart", "ollama"])
+    ),
+    
+    # ─── ComfyUI (FLUX, LTX) ───
+    "comfyui": RetryPolicy(
+        max_retries=3,
+        initial_delay_sec=5,
+        backoff_multiplier=2.0,
+        max_delay_sec=30,
+        timeout_sec=180,               # 3 min per image, 5 min per video
+        on_exhaust="block",
+        # Recovery: restart ComfyUI, clear queue
+        # POST http://localhost:8188/queue {"clear": true}
+    ),
+    
+    # ─── Fish Speech ───
+    "fish_speech": RetryPolicy(
+        max_retries=2,
+        initial_delay_sec=5,
+        backoff_multiplier=2.0,
+        max_delay_sec=20,
+        timeout_sec=120,               # 2 min per scene narration
+        on_exhaust="block",
+    ),
+    
+    # ─── MusicGen / AudioGen ───
+    "musicgen": RetryPolicy(
+        max_retries=2,
+        initial_delay_sec=5,
+        backoff_multiplier=2.0,
+        max_delay_sec=20,
+        timeout_sec=180,               # 3 min per music zone
+        on_exhaust="fallback",
+        fallback_action="use_stock_music",  # Fallback: pre-made royalty-free tracks
+    ),
+    
+    # ─── FFmpeg ───
+    "ffmpeg": RetryPolicy(
+        max_retries=2,
+        initial_delay_sec=2,
+        backoff_multiplier=1.5,
+        max_delay_sec=10,
+        timeout_sec=600,               # 10 min for full compose
+        on_exhaust="block",            # FFmpeg failure = critical
+    ),
+    
+    # ─── YouTube API ───
+    "youtube_api": RetryPolicy(
+        max_retries=5,
+        initial_delay_sec=60,          # YouTube rate limits need patience
+        backoff_multiplier=2.0,
+        max_delay_sec=900,             # Up to 15 min
+        timeout_sec=120,
+        on_exhaust="alert",            # Don't block — alert and retry later
+    ),
+    
+    # ─── Whisper (Audio QA STT) ───
+    "whisper": RetryPolicy(
+        max_retries=2,
+        initial_delay_sec=5,
+        backoff_multiplier=2.0,
+        max_delay_sec=15,
+        timeout_sec=120,
+        on_exhaust="skip",             # QA — skip if STT fails, note in rubric
+    ),
+}
+
+
+class RetryEngine:
+    """
+    Wraps any service call with retry logic.
+    
+    Usage:
+        retry = RetryEngine("ollama")
+        result = retry.execute(lambda: ollama.generate(...))
+    
+    On each failure:
+    1. Log failure type + attempt number
+    2. Emit event (EventBus: SERVICE_RETRY)
+    3. Wait (exponential backoff)
+    4. Try recovery action if available
+    5. Retry or exhaust
+    
+    On exhaust:
+    - "block" → block job + alert Telegram
+    - "skip" → skip this step, note in DB
+    - "fallback" → execute fallback_action
+    - "alert" → alert Telegram, keep job active for manual retry
+    """
+    
+    def __init__(self, service: str):
+        self.policy = RETRY_POLICIES[service]
+        self.service = service
+    
+    def execute(self, fn, *args, **kwargs):
+        for attempt in range(1, self.policy.max_retries + 1):
+            try:
+                return self._run_with_timeout(fn, *args, **kwargs)
+            except Exception as e:
+                failure_type = self._classify_failure(e)
+                delay = self._calculate_delay(attempt)
+                
+                logger.warning(
+                    f"Retry {attempt}/{self.policy.max_retries} for {self.service}: "
+                    f"{failure_type} — waiting {delay}s"
+                )
+                
+                self._attempt_recovery(failure_type)
+                time.sleep(delay)
+        
+        # Exhausted
+        return self._handle_exhaustion()
+    
+    def _classify_failure(self, error) -> FailureType:
+        """Classify error into FailureType for appropriate handling."""
+        if "timeout" in str(error).lower():
+            return FailureType.TIMEOUT
+        elif "CUDA out of memory" in str(error):
+            return FailureType.OOM
+        elif "Connection refused" in str(error):
+            return FailureType.CRASH
+        # ... etc
+    
+    def _attempt_recovery(self, failure_type: FailureType):
+        """Service-specific recovery actions."""
+        if self.service == "ollama" and failure_type in (FailureType.CRASH, FailureType.HUNG):
+            subprocess.run(["ollama", "stop"], capture_output=True)
+            time.sleep(5)
+            # Ollama auto-restarts via systemd/service
+        
+        elif self.service == "comfyui" and failure_type == FailureType.HUNG:
+            # Clear ComfyUI queue
+            requests.post("http://localhost:8188/queue", json={"clear": True})
+            time.sleep(3)
+        
+        elif failure_type == FailureType.OOM:
+            # Emergency GPU cleanup
+            gpu_manager.emergency_cleanup()
+            time.sleep(10)
+    
+    def _calculate_delay(self, attempt: int) -> float:
+        delay = self.policy.initial_delay_sec * (self.policy.backoff_multiplier ** (attempt - 1))
+        return min(delay, self.policy.max_delay_sec)
+```
+
+### 12.5.3 Asset Versioning (`src/core/asset_versioner.py`)
+
+```python
+"""
+Keeps all versions of regenerated assets.
+Yusif can say "go back to version 1" — system can comply.
+
+Naming: scene_001_v1.png, scene_001_v2.png, scene_001_final.png (symlink)
+"""
+
+class AssetVersioner:
+    """
+    Every time an asset is generated or regenerated:
+    1. Save with version suffix: scene_{idx}_v{attempt}.{ext}
+    2. Update 'final' symlink to point to latest/best version
+    3. Record version metadata in DB
+    
+    DB table: asset_versions
+    ├── job_id, scene_index, asset_type ('image'|'video'|'voice'|'music')
+    ├── version (1, 2, 3...)
+    ├── file_path
+    ├── file_size_bytes
+    ├── qa_score (from rubric)
+    ├── is_active (which version is 'final')
+    ├── creation_reason ('initial'|'regen_qa_fail'|'regen_manual'|'regen_prompt_edit')
+    └── created_at
+    """
+    
+    SCHEMA = """
+    CREATE TABLE IF NOT EXISTS asset_versions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        job_id TEXT NOT NULL,
+        scene_index INTEGER,
+        asset_type TEXT NOT NULL,
+        version INTEGER NOT NULL,
+        file_path TEXT NOT NULL,
+        file_size_bytes INTEGER,
+        qa_score REAL,
+        is_active BOOLEAN DEFAULT TRUE,
+        creation_reason TEXT,
+        prompt_used TEXT,              -- The prompt that generated this version
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        
+        FOREIGN KEY (job_id) REFERENCES jobs(id),
+        UNIQUE(job_id, scene_index, asset_type, version)
+    );
+    CREATE INDEX IF NOT EXISTS idx_versions_job ON asset_versions(job_id, scene_index);
+    CREATE INDEX IF NOT EXISTS idx_versions_active ON asset_versions(is_active);
+    """
+    
+    def save_version(self, job_id: str, scene_index: int, asset_type: str,
+                     file_path: str, qa_score: float = None,
+                     reason: str = "initial", prompt: str = None) -> int:
+        """
+        Save new version. Returns version number.
+        Deactivates previous versions, activates this one.
+        Creates/updates 'final' symlink.
+        """
+        # Get next version number
+        current_max = self.db.execute(
+            "SELECT MAX(version) FROM asset_versions WHERE job_id=? AND scene_index=? AND asset_type=?",
+            (job_id, scene_index, asset_type)
+        ).fetchone()[0] or 0
+        
+        new_version = current_max + 1
+        
+        # Deactivate old versions
+        self.db.execute(
+            "UPDATE asset_versions SET is_active=FALSE WHERE job_id=? AND scene_index=? AND asset_type=?",
+            (job_id, scene_index, asset_type)
+        )
+        
+        # Save new version
+        versioned_path = self._version_path(file_path, new_version)
+        shutil.copy2(file_path, versioned_path)
+        
+        self.db.execute("""
+            INSERT INTO asset_versions (job_id, scene_index, asset_type, version,
+                file_path, file_size_bytes, qa_score, is_active, creation_reason, prompt_used)
+            VALUES (?, ?, ?, ?, ?, ?, ?, TRUE, ?, ?)
+        """, (job_id, scene_index, asset_type, new_version,
+              versioned_path, os.path.getsize(versioned_path), qa_score, reason, prompt))
+        
+        # Update 'final' symlink
+        final_path = self._final_path(file_path)
+        if os.path.exists(final_path):
+            os.remove(final_path)
+        os.symlink(versioned_path, final_path)
+        
+        self.db.commit()
+        return new_version
+    
+    def rollback(self, job_id: str, scene_index: int, asset_type: str, 
+                 to_version: int) -> str:
+        """
+        Rollback to a previous version.
+        Called when Yusif says "use the first image".
+        Returns: path to restored version.
+        """
+        # Deactivate all
+        self.db.execute(
+            "UPDATE asset_versions SET is_active=FALSE WHERE job_id=? AND scene_index=? AND asset_type=?",
+            (job_id, scene_index, asset_type)
+        )
+        # Activate target version
+        self.db.execute(
+            "UPDATE asset_versions SET is_active=TRUE WHERE job_id=? AND scene_index=? AND asset_type=? AND version=?",
+            (job_id, scene_index, asset_type, to_version)
+        )
+        
+        # Update symlink
+        row = self.db.execute(
+            "SELECT file_path FROM asset_versions WHERE job_id=? AND scene_index=? AND asset_type=? AND version=?",
+            (job_id, scene_index, asset_type, to_version)
+        ).fetchone()
+        
+        final_path = self._final_path(row["file_path"])
+        os.symlink(row["file_path"], final_path)
+        
+        self.db.commit()
+        return row["file_path"]
+    
+    def get_versions(self, job_id: str, scene_index: int, 
+                     asset_type: str) -> list[dict]:
+        """Get all versions for an asset — for Telegram display."""
+        pass
+```
+
+### 12.5.4 YouTube API Quota Tracker (`src/core/quota_tracker.py`)
+
+```python
+"""
+YouTube Data API v3 quota: 10,000 units per day (resets midnight PT).
+Without tracking, quota exhaustion = silent failures.
+
+Quota costs (official):
+├── videos.insert (upload)     = 1,600 units
+├── videos.update (metadata)   = 50 units
+├── videos.list               = 1 unit
+├── captions.insert           = 400 units
+├── channels.list             = 1 unit
+├── search.list               = 100 units
+├── thumbnails.set            = 50 units
+├── youtube.analytics (read)  = 1-5 units
+└── playlistItems.insert      = 50 units
+
+One full publish cycle:
+├── upload video              = 1,600
+├── set thumbnail             = 50
+├── upload 2 caption tracks   = 800
+├── add to playlist           = 50
+├── verify upload (list)      = 1
+└── Total per video           ≈ 2,501 units
+
+→ Max 4 videos per day with quota to spare for analytics.
+"""
+
+class QuotaTracker:
+    """
+    Tracks YouTube API quota usage in real-time.
+    Prevents operations that would exceed quota.
+    
+    DB table: api_quota_log
+    """
+    
+    SCHEMA = """
+    CREATE TABLE IF NOT EXISTS api_quota_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        date DATE NOT NULL,                    -- Pacific Time date
+        operation TEXT NOT NULL,                -- 'videos.insert', 'thumbnails.set', etc.
+        units_used INTEGER NOT NULL,
+        job_id TEXT,
+        response_status INTEGER,               -- HTTP status code
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE INDEX IF NOT EXISTS idx_quota_date ON api_quota_log(date);
+    """
+    
+    DAILY_LIMIT = 10_000
+    
+    OPERATION_COSTS = {
+        "videos.insert":        1600,
+        "videos.update":        50,
+        "videos.list":          1,
+        "captions.insert":      400,
+        "captions.list":        1,
+        "channels.list":        1,
+        "search.list":          100,
+        "thumbnails.set":       50,
+        "playlistItems.insert": 50,
+        "playlistItems.list":   1,
+        "analytics.query":      5,      # Approximate
+    }
+    
+    def can_afford(self, operation: str) -> bool:
+        """Check if we have enough quota for this operation."""
+        cost = self.OPERATION_COSTS.get(operation, 10)
+        used_today = self._get_today_usage()
+        remaining = self.DAILY_LIMIT - used_today
+        
+        if remaining < cost:
+            logger.warning(f"Quota insufficient: need {cost}, have {remaining}")
+            return False
+        return True
+    
+    def record_usage(self, operation: str, job_id: str = None, 
+                     status: int = 200):
+        """Record an API call."""
+        cost = self.OPERATION_COSTS.get(operation, 10)
+        today = self._pacific_today()
+        
+        self.db.execute(
+            "INSERT INTO api_quota_log (date, operation, units_used, job_id, response_status) VALUES (?, ?, ?, ?, ?)",
+            (today, operation, cost, job_id, status)
+        )
+        self.db.commit()
+        
+        remaining = self.DAILY_LIMIT - self._get_today_usage()
+        if remaining < 2000:
+            self.telegram.alert(f"⚠️ YouTube quota low: {remaining}/10,000 remaining")
+    
+    def get_status(self) -> dict:
+        """Current quota status."""
+        used = self._get_today_usage()
+        return {
+            "date": self._pacific_today(),
+            "used": used,
+            "remaining": self.DAILY_LIMIT - used,
+            "percent_used": round(used / self.DAILY_LIMIT * 100, 1),
+            "max_videos_remaining": (self.DAILY_LIMIT - used) // 2501,
+            "reset_time": "midnight Pacific Time"
+        }
+    
+    def schedule_if_needed(self, operation: str, job_id: str) -> str:
+        """
+        If quota insufficient now, schedule for after midnight PT reset.
+        Returns: 'now' | 'scheduled:YYYY-MM-DDTHH:MM:SS'
+        """
+        if self.can_afford(operation):
+            return "now"
+        
+        # Schedule for 00:05 PT (5 min after reset, safety margin)
+        reset_time = self._next_reset_time()
+        self.db.schedule_deferred_operation(operation, job_id, reset_time)
+        self.telegram.send(
+            f"⏳ YouTube quota exhausted. {operation} for job {job_id} "
+            f"scheduled at {reset_time} (after quota reset)"
+        )
+        return f"scheduled:{reset_time}"
+    
+    def _get_today_usage(self) -> int:
+        row = self.db.execute(
+            "SELECT COALESCE(SUM(units_used), 0) FROM api_quota_log WHERE date = ?",
+            (self._pacific_today(),)
+        ).fetchone()
+        return row[0]
+    
+    def _pacific_today(self) -> str:
+        """YouTube quota resets at midnight Pacific Time."""
+        from datetime import timezone, timedelta
+        pt = timezone(timedelta(hours=-8))
+        return datetime.now(pt).strftime("%Y-%m-%d")
+```
+
+### 12.5.5 Service Watchdog (`src/core/watchdog.py`)
+
+```python
+"""
+Monitors all external services the pipeline depends on.
+Detects: hangs, crashes, unresponsive services, resource exhaustion.
+Recovers: restart, alert, pause pipeline.
+
+Runs as a background thread alongside the pipeline.
+"""
+
+import threading
+import time
+import subprocess
+import requests
+import psutil
+
+
+class ServiceWatchdog(threading.Thread):
+    """
+    Background monitor — checks service health every 30 seconds.
+    
+    Monitored services:
+    ├── Ollama          — HTTP health check + process alive
+    ├── ComfyUI         — HTTP health check + queue status
+    ├── GPU             — nvidia-smi: temp, VRAM, utilization
+    ├── Disk            — Free space check
+    ├── RAM             — Available memory
+    └── Pipeline        — Is PipelineRunner making progress?
+    """
+    
+    daemon = True  # Dies when main process exits
+    
+    def __init__(self, config: dict, event_bus, telegram):
+        super().__init__(name="Watchdog")
+        self.config = config
+        self.events = event_bus
+        self.telegram = telegram
+        self.check_interval = 30        # seconds
+        self.running = True
+        
+        # Pipeline progress tracking
+        self._last_status_change = time.time()
+        self._last_job_status = None
+    
+    def run(self):
+        while self.running:
+            try:
+                self._check_all()
+            except Exception as e:
+                logger.error(f"Watchdog error: {e}")
+            time.sleep(self.check_interval)
+    
+    def _check_all(self):
+        results = {
+            "ollama": self._check_ollama(),
+            "comfyui": self._check_comfyui(),
+            "gpu": self._check_gpu(),
+            "disk": self._check_disk(),
+            "ram": self._check_ram(),
+            "pipeline": self._check_pipeline_progress(),
+        }
+        
+        for service, status in results.items():
+            if status["healthy"] is False:
+                self._handle_unhealthy(service, status)
+    
+    # ─── Service Checks ────────────────────────────────
+    
+    def _check_ollama(self) -> dict:
+        """
+        1. HTTP GET http://localhost:11434/api/tags → should respond
+        2. If no response in 5s → unhealthy
+        3. Check if ollama process exists
+        """
+        try:
+            r = requests.get("http://localhost:11434/api/tags", timeout=5)
+            return {"healthy": r.status_code == 200, "detail": "OK"}
+        except:
+            # Check if process is running
+            alive = any(p.name() == "ollama" for p in psutil.process_iter())
+            return {
+                "healthy": False,
+                "detail": "process_alive_but_unresponsive" if alive else "process_dead",
+                "recovery": "restart"
+            }
+    
+    def _check_comfyui(self) -> dict:
+        """
+        1. HTTP GET http://localhost:8188/system_stats → should respond
+        2. Check queue: GET http://localhost:8188/queue → pending count
+        3. If queue stuck (same items for > 10 min) → hung
+        """
+        try:
+            r = requests.get("http://localhost:8188/system_stats", timeout=5)
+            queue = requests.get("http://localhost:8188/queue", timeout=5).json()
+            
+            pending = len(queue.get("queue_pending", []))
+            running = len(queue.get("queue_running", []))
+            
+            return {
+                "healthy": True,
+                "pending": pending,
+                "running": running,
+                "detail": "OK"
+            }
+        except:
+            return {"healthy": False, "detail": "unreachable", "recovery": "restart"}
+    
+    def _check_gpu(self) -> dict:
+        """
+        nvidia-smi checks:
+        ├── Temperature > 85°C → WARNING (throttling imminent)
+        ├── Temperature > 90°C → CRITICAL (pause pipeline)
+        ├── VRAM > 95% when no model loading → LEAK
+        └── GPU utilization 0% for > 5 min during generation → HUNG
+        """
+        try:
+            result = subprocess.run(
+                ["nvidia-smi", "--query-gpu=temperature.gpu,memory.used,memory.total,utilization.gpu",
+                 "--format=csv,noheader,nounits"],
+                capture_output=True, text=True, timeout=10
+            )
+            temp, vram_used, vram_total, util = result.stdout.strip().split(", ")
+            temp, vram_used, vram_total, util = int(temp), int(vram_used), int(vram_total), int(util)
+            
+            healthy = True
+            detail = "OK"
+            
+            if temp > 90:
+                healthy = False
+                detail = f"CRITICAL: GPU temp {temp}°C — PAUSE PIPELINE"
+            elif temp > 85:
+                detail = f"WARNING: GPU temp {temp}°C — throttling likely"
+            
+            if vram_used / vram_total > 0.95:
+                healthy = False
+                detail = f"VRAM LEAK: {vram_used}/{vram_total}MB used"
+            
+            return {
+                "healthy": healthy,
+                "temp_c": temp,
+                "vram_used_mb": vram_used,
+                "vram_total_mb": vram_total,
+                "utilization": util,
+                "detail": detail
+            }
+        except:
+            return {"healthy": False, "detail": "nvidia-smi failed"}
+    
+    def _check_disk(self) -> dict:
+        """Alert if <50GB free. Emergency if <20GB."""
+        usage = psutil.disk_usage(self.config["settings"]["storage"]["output_dir"])
+        free_gb = usage.free / (1024**3)
+        
+        if free_gb < 20:
+            return {"healthy": False, "detail": f"CRITICAL: {free_gb:.1f}GB free", 
+                    "recovery": "emergency_cleanup"}
+        elif free_gb < 50:
+            return {"healthy": True, "detail": f"WARNING: {free_gb:.1f}GB free"}
+        return {"healthy": True, "free_gb": round(free_gb, 1), "detail": "OK"}
+    
+    def _check_ram(self) -> dict:
+        """Alert if <8GB available (Qwen 72B needs ~26GB system RAM)."""
+        available_gb = psutil.virtual_memory().available / (1024**3)
+        if available_gb < 8:
+            return {"healthy": False, "detail": f"LOW RAM: {available_gb:.1f}GB available"}
+        return {"healthy": True, "available_gb": round(available_gb, 1), "detail": "OK"}
+    
+    def _check_pipeline_progress(self) -> dict:
+        """
+        If job status hasn't changed in > 30 minutes → something is stuck.
+        Exception: MANUAL_REVIEW (waiting for human is expected).
+        """
+        current_job = self.db.get_active_jobs()
+        if not current_job:
+            return {"healthy": True, "detail": "no active jobs"}
+        
+        job = current_job[0]
+        if job["status"] == "manual_review":
+            return {"healthy": True, "detail": "waiting for human review"}
+        
+        if job["status"] != self._last_job_status:
+            self._last_job_status = job["status"]
+            self._last_status_change = time.time()
+        
+        stuck_minutes = (time.time() - self._last_status_change) / 60
+        
+        if stuck_minutes > 30:
+            return {
+                "healthy": False,
+                "detail": f"Pipeline stuck in '{job['status']}' for {stuck_minutes:.0f}min",
+                "recovery": "alert"
+            }
+        return {"healthy": True, "detail": f"Progress OK ({job['status']})", 
+                "minutes_in_state": round(stuck_minutes, 1)}
+    
+    # ─── Recovery Actions ──────────────────────────────
+    
+    def _handle_unhealthy(self, service: str, status: dict):
+        """Take recovery action based on service and failure type."""
+        recovery = status.get("recovery", "alert")
+        
+        if recovery == "restart":
+            self._restart_service(service)
+        elif recovery == "emergency_cleanup":
+            StorageManager(self.config).emergency_cleanup()
+        elif recovery == "alert":
+            pass  # Just alert below
+        
+        # Always alert
+        self.telegram.alert(
+            f"🚨 Watchdog: {service} unhealthy\n"
+            f"Detail: {status['detail']}\n"
+            f"Action: {recovery}"
+        )
+        self.events.emit(Event(
+            EventType.SERVICE_UNHEALTHY,
+            data={"service": service, "status": status}
+        ))
+    
+    def _restart_service(self, service: str):
+        """Attempt service restart."""
+        if service == "ollama":
+            subprocess.run(["ollama", "stop"], capture_output=True, timeout=10)
+            time.sleep(5)
+            subprocess.Popen(["ollama", "serve"])
+            time.sleep(10)
+        
+        elif service == "comfyui":
+            # Kill ComfyUI process and restart
+            for p in psutil.process_iter():
+                if "comfyui" in p.name().lower() or "main.py" in " ".join(p.cmdline()):
+                    p.kill()
+            time.sleep(5)
+            subprocess.Popen(
+                ["python", "main.py", "--listen", "0.0.0.0"],
+                cwd=self.config["settings"]["comfyui"]["path"]
+            )
+            time.sleep(15)
+        
+        logger.info(f"Watchdog: restarted {service}")
+```
 
 ---
 

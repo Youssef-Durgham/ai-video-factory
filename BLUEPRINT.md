@@ -1155,6 +1155,62 @@ Generate all media assets — images, video clips, voice, music, SFX — and com
 - Overall loudness: -14 LUFS (YouTube target), true peak < -1 dBTP
 - A/V sync drift check
 
+### Operational Infrastructure (CRITICAL) 🔧
+
+#### Storage Management
+- **Problem:** Each video = ~5-10GB intermediate files. 10 videos = disk full.
+- **Cleanup policies:**
+  - **Keep forever:** final.mp4, metadata, winning thumbnail, subtitles
+  - **Archive after 7 days:** final scene images, voice tracks, QA reports (compress with zstd)
+  - **Delete after 3 days:** non-final versions, graded intermediates, compose drafts, keyframes
+  - **Delete immediately after compose:** ProRes text overlay layers (500MB+ each)
+- **Emergency cleanup:** When disk < 20GB free → force-clean all deletable files across all jobs
+- **Daily cron:** Runs at 3 AM, applies time-based policies
+
+#### Retry & Backoff Strategy
+- **Every service has its own retry policy:**
+  | Service | Max Retries | Backoff | Timeout | On Exhaust |
+  |---------|------------|---------|---------|------------|
+  | Ollama (Qwen) | 3 | 10s → 20s → 40s | 5 min | Block job |
+  | ComfyUI (FLUX/LTX) | 3 | 5s → 10s → 20s | 3 min | Block job |
+  | Fish Speech | 2 | 5s → 10s | 2 min | Block job |
+  | MusicGen | 2 | 5s → 10s | 3 min | Use stock music |
+  | FFmpeg | 2 | 2s → 3s | 10 min | Block job |
+  | YouTube API | 5 | 60s → 2m → 4m → 8m → 15m | 2 min | Schedule after quota reset |
+  | Whisper (QA) | 2 | 5s → 10s | 2 min | Skip (note in rubric) |
+- **Recovery actions:** OOM → GPU emergency cleanup; Service dead → auto-restart; Hung → clear queue
+- **Failure classification:** timeout, OOM, crash, bad output, hung, rate limit, network
+
+#### Asset Versioning
+- **Every regenerated asset keeps all versions:** `scene_001_v1.png`, `scene_001_v2.png`, `scene_001_final.png` (symlink)
+- **DB tracks:** version number, QA score, creation reason, prompt used, active flag
+- **Rollback:** Yusif says "use the first image" → `rollback(scene=5, version=1)` → updates symlink + DB
+- **Storage cleanup respects versions:** keeps last N versions (configurable, default 2)
+
+#### YouTube API Quota Tracker
+- **Daily limit:** 10,000 units (resets midnight Pacific Time)
+- **Per-video cost:** ~2,501 units (upload 1600 + captions 800 + thumbnail 50 + playlist 50 + verify 1)
+- **Max videos per day:** 4 (with quota left for analytics)
+- **Real-time tracking:** every API call recorded in `api_quota_log` table
+- **Auto-scheduling:** if quota insufficient → schedule operation for after midnight reset
+- **Alerts:** Telegram warning when quota < 2,000 remaining
+
+#### Service Watchdog (background thread)
+- **Monitors every 30 seconds:**
+  | Check | Warning | Critical |
+  |-------|---------|----------|
+  | GPU Temperature | > 85°C | > 90°C → pause pipeline |
+  | VRAM Usage | > 90% | > 95% with no active model → leak |
+  | Disk Space | < 50GB | < 20GB → emergency cleanup |
+  | RAM Available | < 16GB | < 8GB (Qwen needs 26GB) |
+  | Ollama | — | No HTTP response → restart |
+  | ComfyUI | Queue stuck > 10min | No HTTP response → restart |
+  | Pipeline Progress | — | Same status > 30min → alert |
+- **Auto-recovery:** Restarts crashed services, clears hung queues, triggers emergency cleanup
+- **All incidents → Telegram alert + EventStore**
+
+---
+
 ### GPU Memory Management System (CRITICAL) 🧠
 
 **Problem:** Single RTX 3090 (24GB VRAM). Models cannot coexist in memory:
