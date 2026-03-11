@@ -187,7 +187,20 @@ ai-video-factory/
 │   │   ├── music_gen.py            # MusicGen background music
 │   │   ├── sfx_gen.py              # AudioGen sound effects
 │   │   ├── content_id_guard.py     # Audio fingerprint protection
-│   │   └── upscaler.py             # Real-ESRGAN 4K upscale
+│   │   ├── upscaler.py             # Real-ESRGAN 4K upscale
+│   │   ├── text_animator.py        # Animated Arabic text overlay system
+│   │   ├── font_selector.py        # AI font + animation selection (Qwen 72B)
+│   │   └── fonts/                  # Arabic font library (OTF/TTF files)
+│   │       ├── IBM_Plex_Sans_Arabic/
+│   │       ├── Noto_Naskh_Arabic/
+│   │       ├── Amiri/
+│   │       ├── Aref_Ruqaa/
+│   │       ├── Cairo/
+│   │       ├── Tajawal/
+│   │       ├── Scheherazade_New/
+│   │       ├── Readex_Pro/
+│   │       ├── El_Messiri/
+│   │       └── Lemonada/
 │   │
 │   ├── phase6_visual_qa/
 │   │   ├── __init__.py
@@ -1456,13 +1469,449 @@ class AudioCoordinator:
 # ═══ src/phase5_production/video_composer.py ═══
 """
 FFmpeg assembly — CPU only.
-Combines: video clips + voice + music + SFX + text overlays + intro/outro.
+Combines: video clips + voice + music + SFX + ANIMATED text overlays + intro/outro.
 """
 
 class VideoComposer:
     def run(self, job_id: str) -> PhaseResult:
         # ... FFmpeg assembly logic
         pass
+
+
+# ═══ src/phase5_production/text_animator.py ═══
+"""
+Animated Arabic Text Overlay System.
+
+NOT static drawtext! Renders animated text as transparent video layers (MOV/WebM + alpha),
+then composites with FFmpeg. This enables cinematic text animations.
+
+Architecture:
+┌───────────────────────────────────────────────────────────────────┐
+│                     TEXT ANIMATION PIPELINE                        │
+│                                                                   │
+│  1. AI Font Selector (Qwen 72B)                                  │
+│     Script mood + topic → selects font + animation style          │
+│                                                                   │
+│  2. Text Renderer (Pillow + Cairo)                                │
+│     Renders each frame of the animation as PNG with alpha         │
+│                                                                   │
+│  3. Animation Encoder (FFmpeg)                                    │
+│     PNGs → transparent video overlay (ProRes 4444 or VP9+alpha)   │
+│                                                                   │
+│  4. Compositor (FFmpeg)                                           │
+│     Base video + overlay video → final composed video             │
+└───────────────────────────────────────────────────────────────────┘
+"""
+
+from dataclasses import dataclass
+from enum import Enum
+
+
+# ═══════════════════════════════════════════════════════════════
+# ARABIC FONT LIBRARY
+# ═══════════════════════════════════════════════════════════════
+
+class FontCategory(str, Enum):
+    FORMAL_NEWS     = "formal_news"       # أخبار رسمية، تحليل سياسي
+    DRAMATIC        = "dramatic"          # وثائقي درامي، جرائم، ألغاز
+    HISTORICAL      = "historical"        # تاريخي، حضارات، حروب قديمة
+    MODERN_TECH     = "modern_tech"       # تكنولوجيا، علوم، مستقبل
+    ISLAMIC         = "islamic"           # ديني، إسلامي، تراث
+    MILITARY        = "military"          # عسكري، جيوسياسي، حروب حديثة
+    EDITORIAL       = "editorial"         # رأي، تعليق، تحليل
+    STORYTELLING    = "storytelling"      # قصص، سرد، حكايات
+
+
+# Font library — curated Arabic fonts (all free/open-source)
+FONT_LIBRARY = {
+    FontCategory.FORMAL_NEWS: {
+        "primary": "IBM Plex Sans Arabic",      # نظيف، رسمي، مقروء
+        "accent": "Noto Naskh Arabic",           # للعناوين
+        "fallback": "Cairo",
+        "weight_range": [400, 700],
+        "style_notes": "Clean, authoritative. No decorations."
+    },
+    FontCategory.DRAMATIC: {
+        "primary": "Aref Ruqaa",                 # درامي، مشوّق
+        "accent": "Lemonada",                     # للتأثير
+        "fallback": "Tajawal",
+        "weight_range": [700, 900],
+        "style_notes": "Bold, high contrast. Shadows allowed."
+    },
+    FontCategory.HISTORICAL: {
+        "primary": "Amiri",                       # كلاسيكي، تراثي
+        "accent": "Scheherazade New",             # للاقتباسات التاريخية
+        "fallback": "Noto Naskh Arabic",
+        "weight_range": [400, 700],
+        "style_notes": "Elegant, classical. Ornamental accents OK."
+    },
+    FontCategory.MODERN_TECH: {
+        "primary": "IBM Plex Sans Arabic",        # حديث، تقني
+        "accent": "Readex Pro",                   # هندسي
+        "fallback": "Cairo",
+        "weight_range": [300, 600],
+        "style_notes": "Geometric, minimal. Thin weights for futuristic feel."
+    },
+    FontCategory.ISLAMIC: {
+        "primary": "Scheherazade New",            # نسخ تقليدي
+        "accent": "Amiri Quran",                  # للآيات
+        "fallback": "Amiri",
+        "weight_range": [400, 700],
+        "style_notes": "Traditional Naskh. Respectful, ornate headers."
+    },
+    FontCategory.MILITARY: {
+        "primary": "Cairo",                       # قوي، مباشر
+        "accent": "Tajawal",                      # للأرقام والإحصائيات
+        "fallback": "IBM Plex Sans Arabic",
+        "weight_range": [600, 900],
+        "style_notes": "Heavy weight, all-caps feel. Stark, impactful."
+    },
+    FontCategory.EDITORIAL: {
+        "primary": "Noto Sans Arabic",            # نظيف، محايد
+        "accent": "El Messiri",                   # للعناوين
+        "fallback": "Cairo",
+        "weight_range": [400, 700],
+        "style_notes": "Neutral, readable. Let the content speak."
+    },
+    FontCategory.STORYTELLING: {
+        "primary": "Tajawal",                     # دافئ، ودود
+        "accent": "Lemonada",                     # مرح
+        "fallback": "Noto Sans Arabic",
+        "weight_range": [300, 600],
+        "style_notes": "Warm, inviting. Slightly rounded."
+    },
+}
+
+
+# ═══════════════════════════════════════════════════════════════
+# ANIMATION STYLES
+# ═══════════════════════════════════════════════════════════════
+
+class AnimationStyle(str, Enum):
+    # ─── Entry Animations (text appears) ───
+    TYPEWRITER      = "typewriter"       # حرف حرف (character by character RTL)
+    WORD_BY_WORD    = "word_by_word"     # كلمة كلمة مع الصوت
+    FADE_IN         = "fade_in"          # تظهر تدريجياً (alpha 0→1)
+    SLIDE_RIGHT     = "slide_right"      # تنزلق من اليمين (RTL natural direction)
+    SLIDE_UP        = "slide_up"         # تطلع من تحت
+    SCALE_UP        = "scale_up"         # تكبر من صغير
+    BLUR_REVEAL     = "blur_reveal"      # من ضبابي لواضح
+    GLITCH_IN       = "glitch_in"        # تأثير تشويش (للتقني/الدرامي)
+    LETTER_CASCADE  = "letter_cascade"   # كل حرف يسقط بمكانه
+    
+    # ─── Exit Animations (text disappears) ───
+    FADE_OUT        = "fade_out"
+    SLIDE_LEFT      = "slide_left"
+    SCALE_DOWN      = "scale_down"
+    
+    # ─── Persistent Effects (while text is visible) ───
+    SUBTLE_FLOAT    = "subtle_float"     # حركة خفيفة للأعلى/أسفل
+    GLOW_PULSE      = "glow_pulse"       # نبض خفيف بالإضاءة
+    SHADOW_DRIFT    = "shadow_drift"     # الظل يتحرك ببطء
+
+
+# Animation presets per content type
+ANIMATION_PRESETS = {
+    FontCategory.FORMAL_NEWS: {
+        "entry": AnimationStyle.SLIDE_RIGHT,
+        "exit": AnimationStyle.FADE_OUT,
+        "persistent": None,
+        "duration_entry_ms": 400,
+        "duration_exit_ms": 300,
+        "easing": "ease_out_cubic",
+    },
+    FontCategory.DRAMATIC: {
+        "entry": AnimationStyle.BLUR_REVEAL,
+        "exit": AnimationStyle.FADE_OUT,
+        "persistent": AnimationStyle.GLOW_PULSE,
+        "duration_entry_ms": 600,
+        "duration_exit_ms": 400,
+        "easing": "ease_in_out_quad",
+    },
+    FontCategory.HISTORICAL: {
+        "entry": AnimationStyle.TYPEWRITER,
+        "exit": AnimationStyle.FADE_OUT,
+        "persistent": None,
+        "duration_entry_ms": 800,       # Slower = more elegant
+        "duration_exit_ms": 500,
+        "easing": "linear",
+    },
+    FontCategory.MODERN_TECH: {
+        "entry": AnimationStyle.GLITCH_IN,
+        "exit": AnimationStyle.SCALE_DOWN,
+        "persistent": AnimationStyle.SUBTLE_FLOAT,
+        "duration_entry_ms": 350,       # Fast = techy
+        "duration_exit_ms": 250,
+        "easing": "ease_out_expo",
+    },
+    FontCategory.ISLAMIC: {
+        "entry": AnimationStyle.FADE_IN,
+        "exit": AnimationStyle.FADE_OUT,
+        "persistent": None,
+        "duration_entry_ms": 700,       # Gentle, respectful
+        "duration_exit_ms": 700,
+        "easing": "ease_in_out_sine",
+    },
+    FontCategory.MILITARY: {
+        "entry": AnimationStyle.SLIDE_UP,
+        "exit": AnimationStyle.SLIDE_LEFT,
+        "persistent": None,
+        "duration_entry_ms": 300,       # Sharp, decisive
+        "duration_exit_ms": 200,
+        "easing": "ease_out_quart",
+    },
+    FontCategory.EDITORIAL: {
+        "entry": AnimationStyle.WORD_BY_WORD,
+        "exit": AnimationStyle.FADE_OUT,
+        "persistent": None,
+        "duration_entry_ms": 500,
+        "duration_exit_ms": 300,
+        "easing": "ease_out_cubic",
+    },
+    FontCategory.STORYTELLING: {
+        "entry": AnimationStyle.LETTER_CASCADE,
+        "exit": AnimationStyle.FADE_OUT,
+        "persistent": AnimationStyle.SUBTLE_FLOAT,
+        "duration_entry_ms": 600,
+        "duration_exit_ms": 400,
+        "easing": "ease_out_back",       # Slight overshoot = playful
+    },
+}
+
+
+# ═══════════════════════════════════════════════════════════════
+# AI FONT + ANIMATION SELECTOR
+# ═══════════════════════════════════════════════════════════════
+
+class FontAnimationSelector:
+    """
+    Uses Qwen 72B to analyze script and select optimal font + animation.
+    Runs during Phase 3 (Script) — decision stored in DB for Phase 5 (Compose).
+    
+    Why AI selection:
+    - Same "military" topic can be tense thriller or calm analysis
+    - Script TONE matters more than just topic category
+    - AI reads the actual script and picks the best match
+    """
+    
+    def select(self, script: dict, channel_config: dict) -> FontAnimationConfig:
+        """
+        Qwen 72B prompt:
+        ┌──────────────────────────────────────────────────────────┐
+        │ You are a professional Arabic video typographer.          │
+        │                                                          │
+        │ VIDEO SCRIPT:                                            │
+        │ Title: "{title}"                                         │
+        │ Topic: {topic_category}                                  │
+        │ Tone: {emotional_arc}                                    │
+        │ Sample narration: "{first_3_scenes_narration}"           │
+        │ Channel style: {channel_brand_kit}                       │
+        │                                                          │
+        │ Available font categories:                               │
+        │ {list FontCategory with descriptions}                    │
+        │                                                          │
+        │ Select:                                                  │
+        │ 1. font_category: Which category best fits this video?   │
+        │ 2. primary_weight: Font weight (300-900)                 │
+        │ 3. accent_usage: Where to use accent font?               │
+        │    "titles_only" | "quotes" | "statistics" | "none"      │
+        │ 4. text_color: Hex color for primary text                │
+        │ 5. accent_color: Hex color for accent/highlight          │
+        │ 6. background_style: "none" | "box" | "gradient" | "blur"│
+        │ 7. animation_override: null (use preset) or specific     │
+        │    animation if the preset doesn't fit                   │
+        │ 8. reasoning: Why this combination?                      │
+        │                                                          │
+        │ Return JSON.                                             │
+        └──────────────────────────────────────────────────────────┘
+        """
+        pass
+    
+    # Falls back to rule-based selection if LLM fails
+    def _fallback_select(self, topic_category: str) -> FontAnimationConfig:
+        """Direct category → font mapping. No AI needed."""
+        pass
+
+
+@dataclass
+class FontAnimationConfig:
+    """Stored in DB: jobs.font_animation_config (JSON)"""
+    font_category: FontCategory
+    primary_font: str
+    accent_font: str
+    primary_weight: int
+    accent_usage: str       # "titles_only" | "quotes" | "statistics" | "none"
+    text_color: str         # "#FFFFFF"
+    accent_color: str       # "#FFD700"
+    background_style: str   # "none" | "box" | "gradient" | "blur"
+    background_color: str   # "#00000080" (semi-transparent black)
+    animation_preset: dict  # From ANIMATION_PRESETS
+    animation_override: dict = None  # AI can override specific animations
+    reasoning: str = ""
+
+
+# ═══════════════════════════════════════════════════════════════
+# TEXT ANIMATION RENDERER
+# ═══════════════════════════════════════════════════════════════
+
+class TextAnimationRenderer:
+    """
+    Renders animated Arabic text as transparent video overlays.
+    
+    Method: Frame-by-frame rendering → transparent video layer
+    
+    Pipeline per text overlay:
+    1. Calculate total frames needed (entry + hold + exit)
+    2. For each frame:
+       a. Calculate animation state (position, alpha, scale, etc.)
+       b. Render text with Pillow/PyCairo on transparent canvas
+       c. Apply effects (shadow, glow, background box)
+       d. Save as PNG with alpha channel
+    3. Encode PNGs → transparent video (FFmpeg ProRes 4444 or VP9+alpha)
+    4. Overlay onto base video at correct timestamp
+    
+    Why not FFmpeg drawtext?
+    ├── drawtext CAN do fade/slide but NOT:
+    │   ├── Typewriter (character by character)
+    │   ├── Word-by-word sync
+    │   ├── Blur reveal
+    │   ├── Glitch effects
+    │   ├── Letter cascade
+    │   ├── Complex easing curves
+    │   └── Per-character animations
+    ├── Pillow/Cairo gives FULL control over every pixel per frame
+    └── Pre-rendered overlays = predictable quality (no FFmpeg font issues)
+    """
+    
+    def render_overlay(self, text: str, config: FontAnimationConfig,
+                       scene_duration_sec: float, fps: int = 30,
+                       resolution: tuple = (1920, 1080)) -> str:
+        """
+        Renders animated text overlay as transparent video file.
+        Returns: path to overlay video (ProRes 4444 with alpha)
+        """
+        preset = config.animation_override or config.animation_preset
+        
+        # Calculate frame counts
+        entry_frames = int(preset["duration_entry_ms"] / 1000 * fps)
+        exit_frames = int(preset["duration_exit_ms"] / 1000 * fps)
+        hold_frames = int(scene_duration_sec * fps) - entry_frames - exit_frames
+        total_frames = entry_frames + hold_frames + exit_frames
+        
+        frames = []
+        for i in range(total_frames):
+            # Determine animation phase
+            if i < entry_frames:
+                phase = "entry"
+                progress = self._ease(i / entry_frames, preset["easing"])
+            elif i < entry_frames + hold_frames:
+                phase = "hold"
+                progress = 1.0
+            else:
+                phase = "exit"
+                exit_progress = (i - entry_frames - hold_frames) / exit_frames
+                progress = 1.0 - self._ease(exit_progress, preset["easing"])
+            
+            # Render frame
+            frame = self._render_frame(
+                text=text,
+                config=config,
+                animation_style=preset[phase] if phase != "hold" else preset.get("persistent"),
+                progress=progress,
+                resolution=resolution
+            )
+            frames.append(frame)
+        
+        # Encode frames → transparent video
+        return self._encode_overlay(frames, fps)
+    
+    def _render_frame(self, text, config, animation_style, progress, resolution):
+        """
+        Render single frame using PyCairo (better Arabic shaping than Pillow).
+        
+        PyCairo advantages for Arabic:
+        ├── Proper HarfBuzz text shaping (ligatures, marks)
+        ├── Pango layout for complex RTL text
+        ├── Sub-pixel rendering
+        └── Gradient fills, shadows, outlines natively
+        """
+        # 1. Create transparent canvas
+        # 2. Apply animation transform (position, alpha, scale based on progress)
+        # 3. Render text with font, color, shadow
+        # 4. Apply background box/gradient if configured
+        # 5. Return as PIL Image (RGBA)
+        pass
+    
+    def _ease(self, t: float, easing: str) -> float:
+        """Easing functions for smooth animations."""
+        if easing == "linear": return t
+        elif easing == "ease_out_cubic": return 1 - (1-t)**3
+        elif easing == "ease_out_expo": return 1 - 2**(-10*t) if t > 0 else 0
+        elif easing == "ease_in_out_quad": return 2*t*t if t < 0.5 else 1-(-2*t+2)**2/2
+        elif easing == "ease_in_out_sine": return -(math.cos(math.pi*t)-1)/2
+        elif easing == "ease_out_quart": return 1 - (1-t)**4
+        elif easing == "ease_out_back": c1=1.70158; return 1+c1*((t-1)**3)+c1*((t-1)**2)
+        return t
+    
+    def _encode_overlay(self, frames: list, fps: int) -> str:
+        """
+        Encode PNG frames → transparent video.
+        
+        Option A: ProRes 4444 (best quality, large files)
+        ffmpeg -framerate 30 -i frame_%04d.png -c:v prores_ks -profile:v 4444 
+               -pix_fmt yuva444p10le overlay.mov
+        
+        Option B: VP9 + alpha (smaller files, good quality)
+        ffmpeg -framerate 30 -i frame_%04d.png -c:v libvpx-vp9 
+               -pix_fmt yuva420p overlay.webm
+        
+        We use ProRes 4444 (quality > size for intermediate files).
+        """
+        pass
+
+
+# ═══════════════════════════════════════════════════════════════
+# SPECIAL ANIMATIONS (complex ones that need custom rendering)
+# ═══════════════════════════════════════════════════════════════
+
+class TypewriterAnimation:
+    """
+    Character-by-character reveal, RTL direction.
+    Arabic-aware: reveals full ligature groups, not broken characters.
+    
+    Uses python-bidi + arabic-reshaper to handle:
+    ├── Connected letters (لا as one unit, not ل + ا)
+    ├── Diacritics (تشكيل) appear with their letter
+    └── RTL cursor position
+    """
+    pass
+
+class WordByWordAnimation:
+    """
+    Syncs word appearance with narration audio.
+    
+    Method:
+    1. Get word-level timestamps from voice generation (Fish Speech outputs these)
+    2. Each word fades/slides in at exactly its spoken timestamp
+    3. Creates "karaoke-style" text that follows the narrator
+    
+    Perfect for: quotes, poetry, Quranic verses, key statements
+    """
+    pass
+
+class GlitchAnimation:
+    """
+    Digital glitch effect — text appears with distortion then stabilizes.
+    
+    Method per frame:
+    1. Render text normally
+    2. Random horizontal slice displacement (RGB channel shift)
+    3. Random scanline noise
+    4. Decreasing intensity over entry_frames → clean text at end
+    
+    Perfect for: tech topics, hacking, conspiracy, dystopia
+    """
+    pass
 ```
 
 ---

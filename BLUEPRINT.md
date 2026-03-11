@@ -319,7 +319,7 @@ Write a complete, reviewed, fact-checked script divided into timed scenes. Uses 
   
   ✅ Layer 4: PRODUCTION VALUE
      - Cinematic sound design (Feature 31): 6 audio layers
-     - Professional text overlays with animations
+     - **Animated Arabic text overlays** — AI-selected fonts + cinema-grade animations (see below)
      - Intro/outro branding
      - Chapter markers, timestamps
      - Arabic subtitles (SRT)
@@ -990,15 +990,45 @@ Generate all media assets — images, video clips, voice, music, SFX — and com
   3. **Mix background music** (volume: 20-30%, auto-duck under narration)
   4. **Add SFX** at appropriate timestamps (volume: 40-60%)
   5. **Apply transitions** between scenes (crossfade, cut, dissolve)
-  6. **Add Arabic text overlays (post-production — NOT in AI images):**
-     - All visible text is rendered via FFmpeg/Pillow OVER the video
+  6. **Animated Arabic text overlays (post-production — NOT in AI images):**
+     - All visible text rendered as **transparent animated video layers**, then composited
+     - **NOT** FFmpeg drawtext (too limited for Arabic animations)
+     - Method: PyCairo (proper Arabic shaping via HarfBuzz/Pango) → frame-by-frame PNGs → ProRes 4444 overlay → FFmpeg composite
+     
+     **AI Font Selection (Qwen 72B — during Phase 3):**
+     - Reads script tone, topic, emotional arc → selects from 8 font categories:
+       - Formal/News: IBM Plex Sans Arabic (clean, authoritative)
+       - Dramatic: Aref Ruqaa (bold, high-contrast, shadows)
+       - Historical: Amiri (classical, elegant, ornamental)
+       - Modern/Tech: Readex Pro (geometric, minimal)
+       - Islamic: Scheherazade New (traditional Naskh)
+       - Military: Cairo Heavy (stark, impactful)
+       - Editorial: Noto Sans Arabic (neutral, readable)
+       - Storytelling: Tajawal (warm, rounded)
+     - Each category has: primary font + accent font + weight range + style notes
+     - Colors, background style (none/box/gradient/blur) also AI-selected
+     
+     **Animation Styles (per font category):**
+     - Formal: slide-right entry (400ms) → clean, professional
+     - Dramatic: blur-reveal (600ms) + glow pulse → cinematic tension
+     - Historical: typewriter RTL (800ms) → elegant, deliberate
+     - Modern: glitch-in (350ms) + subtle float → futuristic
+     - Islamic: gentle fade-in (700ms) → respectful
+     - Military: sharp slide-up (300ms) → decisive, commanding
+     - Editorial: word-by-word (500ms) → emphasis on content
+     - Storytelling: letter cascade (600ms) + float → playful
+     
+     **Special animations:**
+     - Typewriter: Arabic-aware, reveals full ligature groups (لا as unit)
+     - Word-by-word: syncs with Fish Speech word-level timestamps (karaoke-style)
+     - Glitch: RGB channel shift + scanlines → digital feel
+     
+     **Content types:**
      - Title card at start
      - Section headers
-     - Key facts/dates/statistics on screen
-     - Highlighted quotes or key phrases
+     - Key facts/dates/statistics
+     - Highlighted quotes
      - Subscribe reminder at end
-     - Style: bold Arabic font (Cairo/Tajawal), with background blur/darken strip for readability
-     - Text animations: fade-in, slide-in, typewriter effect
   7. **Add intro/outro** templates (per channel branding)
   8. **Render final video:**
      - Resolution: 1920x1080 or 4K
