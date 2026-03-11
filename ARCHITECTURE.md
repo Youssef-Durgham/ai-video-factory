@@ -141,12 +141,16 @@ ai-video-factory/
 │   │   ├── gpu_manager.py          # Low-level GPU memory (see §6)
 │   │   ├── gpu_logger.py           # GPU precision logging (see §6)
 │   │   ├── scheduler.py            # Job scheduler (APScheduler)
-│   │   ├── telegram_bot.py         # Telegram notifications + interactive
+│   │   ├── telegram_bot.py         # Telegram bot core (§12.6)
+│   │   ├── telegram_handlers.py    # Callback handlers for inline buttons (§12.6)
+│   │   ├── telegram_conversations.py # Multi-step conversation flows (§12.6)
+│   │   ├── job_queue.py            # Job queue + priority + concurrency (§12.7)
 │   │   ├── retry_engine.py         # Per-service retry + backoff (§12.5.2)
 │   │   ├── asset_versioner.py      # Asset version control (§12.5.3)
 │   │   ├── quota_tracker.py        # YouTube API quota tracking (§12.5.4)
 │   │   ├── storage_manager.py      # Disk cleanup + archival (§12.5.1)
-│   │   └── watchdog.py             # Service health monitor (§12.5.5)
+│   │   ├── watchdog.py             # Service health monitor (§12.5.5)
+│   │   └── db_backup.py            # SQLite backup + integrity (§12.9)
 │   │
 │   ├── phase1_research/
 │   │   ├── __init__.py
@@ -5314,6 +5318,1009 @@ class ServiceWatchdog(threading.Thread):
 
 ---
 
+### 12.6 Telegram Bot Architecture (`src/core/telegram_bot.py` + handlers + conversations)
+
+> **The human interface.** Yusif controls the entire factory through Telegram.
+> This is NOT just "send alerts" — it's a full interactive control panel.
+
+```python
+"""
+Telegram Bot — built with python-telegram-bot v20+ (async).
+
+Architecture:
+┌────────────────────────────────────────────────────────────────┐
+│                    TELEGRAM BOT LAYERS                          │
+│                                                                │
+│  Layer 1: Core Bot (telegram_bot.py)                           │
+│  ├── Bot initialization + webhook/polling setup                │
+│  ├── Message routing                                           │
+│  ├── Media sending (images, videos, albums)                    │
+│  └── Rate limiting (Telegram: 30 msgs/sec, 20 msgs/min/chat)  │
+│                                                                │
+│  Layer 2: Handlers (telegram_handlers.py)                      │
+│  ├── Inline button callbacks                                   │
+│  ├── Command handlers (/status, /queue, /cancel, etc.)        │
+│  └── Notification formatters                                   │
+│                                                                │
+│  Layer 3: Conversations (telegram_conversations.py)            │
+│  ├── Topic selection flow                                      │
+│  ├── Manual review flow                                        │
+│  ├── Asset regen flow                                          │
+│  └── Settings adjustment flow                                  │
+└────────────────────────────────────────────────────────────────┘
+"""
+
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    Application, CommandHandler, CallbackQueryHandler,
+    ConversationHandler, MessageHandler, filters
+)
+
+
+# ═══════════════════════════════════════════════════════════════
+# LAYER 1: CORE BOT
+# ═══════════════════════════════════════════════════════════════
+
+class TelegramBot:
+    """
+    Core bot — handles connection, media, rate limiting.
+    
+    Config (settings.yaml):
+    telegram:
+      bot_token: "BOT_TOKEN_HERE"
+      chat_id: "YUSIF_CHAT_ID"         # Primary chat for all notifications
+      mode: "polling"                    # "polling" | "webhook"
+      webhook_url: null                  # Required if mode=webhook
+      rate_limit:
+        messages_per_second: 25          # Below Telegram's 30/sec limit
+        albums_per_minute: 10            # Media groups are heavier
+    """
+    
+    def __init__(self, config: dict):
+        self.app = Application.builder().token(config["bot_token"]).build()
+        self.chat_id = config["chat_id"]
+        self._register_handlers()
+    
+    def _register_handlers(self):
+        """Register all command + callback handlers."""
+        # Commands
+        self.app.add_handler(CommandHandler("status", handlers.cmd_status))
+        self.app.add_handler(CommandHandler("queue", handlers.cmd_queue))
+        self.app.add_handler(CommandHandler("cancel", handlers.cmd_cancel))
+        self.app.add_handler(CommandHandler("retry", handlers.cmd_retry))
+        self.app.add_handler(CommandHandler("quota", handlers.cmd_quota))
+        self.app.add_handler(CommandHandler("disk", handlers.cmd_disk))
+        self.app.add_handler(CommandHandler("health", handlers.cmd_health))
+        self.app.add_handler(CommandHandler("new", handlers.cmd_new_video))
+        self.app.add_handler(CommandHandler("settings", handlers.cmd_settings))
+        
+        # Conversation flows
+        self.app.add_handler(conversations.topic_selection_conv)
+        self.app.add_handler(conversations.manual_review_conv)
+        self.app.add_handler(conversations.asset_regen_conv)
+        
+        # Inline button callbacks (catch-all)
+        self.app.add_handler(CallbackQueryHandler(handlers.handle_callback))
+    
+    # ─── Media Sending ─────────────────────────────────
+    
+    async def send(self, text: str, buttons: list = None):
+        """Send text message with optional inline buttons."""
+        markup = None
+        if buttons:
+            markup = InlineKeyboardMarkup([
+                [InlineKeyboardButton(b["text"], callback_data=b["data"]) for b in row]
+                for row in buttons
+            ])
+        await self.app.bot.send_message(self.chat_id, text, 
+                                         reply_markup=markup, parse_mode="HTML")
+    
+    async def send_image_album(self, images: list[dict]):
+        """
+        Send up to 10 images as Telegram album.
+        images: [{path, caption}]
+        Telegram limit: 10 media per album.
+        For >10 images: split into multiple albums.
+        """
+        from telegram import InputMediaPhoto
+        
+        for chunk in self._chunks(images, 10):
+            media = [
+                InputMediaPhoto(
+                    open(img["path"], "rb"),
+                    caption=img.get("caption", "")[:1024],  # Telegram caption limit
+                    parse_mode="HTML"
+                )
+                for img in chunk
+            ]
+            await self.app.bot.send_media_group(self.chat_id, media)
+            await asyncio.sleep(1)  # Rate limiting between albums
+    
+    async def send_video(self, video_path: str, caption: str, buttons: list = None):
+        """Send video with caption and optional buttons."""
+        markup = None
+        if buttons:
+            markup = InlineKeyboardMarkup([
+                [InlineKeyboardButton(b["text"], callback_data=b["data"]) for b in row]
+                for row in buttons
+            ])
+        
+        # Telegram video limit: 50MB for bots, 2GB with local API server
+        file_size = os.path.getsize(video_path)
+        if file_size > 50 * 1024 * 1024:
+            # Send as document (no preview but no size limit with local API)
+            await self.app.bot.send_document(
+                self.chat_id, open(video_path, "rb"),
+                caption=caption, reply_markup=markup
+            )
+        else:
+            await self.app.bot.send_video(
+                self.chat_id, open(video_path, "rb"),
+                caption=caption, reply_markup=markup,
+                supports_streaming=True
+            )
+    
+    async def alert(self, text: str):
+        """Send alert with 🚨 prefix."""
+        await self.send(f"🚨 {text}")
+
+
+# ═══════════════════════════════════════════════════════════════
+# LAYER 2: HANDLERS
+# ═══════════════════════════════════════════════════════════════
+
+class TelegramHandlers:
+    """
+    Command handlers and callback processors.
+    
+    COMMANDS:
+    /status     → Current pipeline status (active job, phase, GPU, disk)
+    /queue      → Job queue (pending, active, completed today)
+    /cancel     → Cancel active job (confirmation required)
+    /retry      → Retry blocked job from last checkpoint
+    /quota      → YouTube API quota status
+    /disk       → Disk usage + cleanup options
+    /health     → Full system health (GPU, RAM, services, disk)
+    /new        → Start new video (triggers topic selection flow)
+    /settings   → View/change settings (channel, quality, auto-publish)
+    """
+    
+    async def cmd_status(self, update: Update, context):
+        """
+        📊 Pipeline Status
+        
+        🎬 Active Job: job_20260315_120000
+        📋 Topic: "أسرار الحرب العالمية الثانية"
+        🔄 Phase: VIDEO_QA (6B — verifying clips)
+        ⏱️ Time in phase: 4m 22s
+        🎯 Progress: 12/15 scenes verified
+        🖥️ GPU: Qwen2.5-VL 72B loaded (14.2GB VRAM, 68°C)
+        💾 Disk: 342GB free
+        📊 YouTube Quota: 7,499/10,000 remaining
+        
+        ⏳ Queue: 2 jobs pending
+        """
+        pass
+    
+    async def cmd_queue(self, update: Update, context):
+        """
+        📋 Job Queue
+        
+        🟢 Active: "أسرار الحرب العالمية الثانية" (VIDEO_QA)
+        ⏳ #2: "مستقبل الذكاء الاصطناعي" (pending)
+        ⏳ #3: "أزمة المياه في الشرق الأوسط" (pending)
+        ✅ Today: 1 video published
+        ❌ Blocked: 0
+        
+        [▶️ Start #2 Now] [🔀 Reorder] [❌ Remove #3]
+        """
+        pass
+    
+    async def handle_callback(self, update: Update, context):
+        """
+        Routes inline button callbacks by prefix.
+        
+        Callback data format: "{action}:{job_id}:{extra}"
+        
+        Actions:
+        ├── "approve_images:{job_id}"      → Approve all images, continue pipeline
+        ├── "regen_failed:{job_id}"        → Regenerate failed images
+        ├── "regen_scene:{job_id}:{idx}"   → Regenerate specific scene
+        ├── "approve_videos:{job_id}"      → Approve all video clips
+        ├── "approve_final:{job_id}"       → Approve final video, proceed to publish
+        ├── "reject_final:{job_id}"        → Reject, block job
+        ├── "publish:{job_id}"             → Publish now
+        ├── "cancel:{job_id}"              → Cancel job
+        ├── "retry:{job_id}"               → Retry from last checkpoint
+        ├── "select_topic:{job_id}:{idx}"  → Select topic from research results
+        ├── "rollback:{job_id}:{scene}:{v}"→ Rollback asset to version
+        ├── "edit_prompt:{job_id}:{scene}" → Enter prompt edit mode
+        └── "queue_*"                      → Queue management actions
+        """
+        query = update.callback_query
+        await query.answer()  # Acknowledge button press
+        
+        data = query.data
+        action = data.split(":")[0]
+        
+        # Route to appropriate handler
+        ROUTES = {
+            "approve_images":  self._handle_approve_images,
+            "regen_failed":    self._handle_regen_failed,
+            "regen_scene":     self._handle_regen_scene,
+            "approve_videos":  self._handle_approve_videos,
+            "approve_final":   self._handle_approve_final,
+            "publish":         self._handle_publish,
+            "cancel":          self._handle_cancel,
+            "retry":           self._handle_retry,
+            "select_topic":    self._handle_select_topic,
+            "rollback":        self._handle_rollback,
+            "edit_prompt":     self._handle_edit_prompt,
+        }
+        
+        handler = ROUTES.get(action)
+        if handler:
+            await handler(query, data)
+    
+    async def _handle_approve_images(self, query, data):
+        """User approved images → unblock pipeline → continue to LTX."""
+        job_id = data.split(":")[1]
+        self.state_machine.transition(job_id, JobStatus.VIDEO)
+        self.pipeline_runner.resume_job(job_id)
+        await query.edit_message_text(f"✅ Images approved. Starting video generation...")
+    
+    async def _handle_select_topic(self, query, data):
+        """User selected a topic from research results."""
+        _, job_id, topic_idx = data.split(":")
+        topic = self.db.get_research_topics(job_id)[int(topic_idx)]
+        self.db.set_selected_topic(job_id, topic)
+        self.state_machine.transition(job_id, JobStatus.SEO)
+        self.pipeline_runner.resume_job(job_id)
+        await query.edit_message_text(f"✅ Topic selected: {topic['title']}\nStarting SEO...")
+    
+    async def _handle_edit_prompt(self, query, data):
+        """Enter prompt editing — wait for user's new prompt text."""
+        _, job_id, scene_idx = data.split(":")
+        # Store state: waiting for prompt text
+        context.user_data["editing_prompt"] = {
+            "job_id": job_id,
+            "scene_index": int(scene_idx)
+        }
+        await query.edit_message_text(
+            f"✏️ Scene {scene_idx} — Enter new visual prompt:\n"
+            f"Current: {self.db.get_scene(job_id, int(scene_idx))['visual_prompt']}"
+        )
+
+
+# ═══════════════════════════════════════════════════════════════
+# LAYER 3: CONVERSATION FLOWS
+# ═══════════════════════════════════════════════════════════════
+
+class TelegramConversations:
+    """
+    Multi-step conversation flows for complex interactions.
+    Uses python-telegram-bot ConversationHandler.
+    """
+    
+    # ─── Topic Selection Flow ──────────────────────────
+    # Triggered by: Phase 1 completion (research done, topics ready)
+    # 
+    # Step 1: Bot sends 5 topics with descriptions
+    #   "🔍 Research complete! Select a topic:
+    #    
+    #    1️⃣ أسرار الحرب العالمية الثانية المنسية
+    #       Score: 8.5 | Trend: ↑ | Competition: Low
+    #    
+    #    2️⃣ مستقبل الذكاء الاصطناعي في العالم العربي  
+    #       Score: 9.1 | Trend: ↑↑ | Competition: Medium
+    #    ...
+    #    [1️⃣] [2️⃣] [3️⃣] [4️⃣] [5️⃣] [🔄 New Topics]"
+    #
+    # Step 2: User taps a button → topic selected → pipeline continues
+    # Step 3 (optional): User types custom topic → skip research, use this
+    
+    TOPIC_SELECT, TOPIC_CONFIRM = range(2)
+    
+    topic_selection_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(
+            _topic_entry, pattern="^topics_ready:")
+        ],
+        states={
+            TOPIC_SELECT: [
+                CallbackQueryHandler(_topic_selected, pattern="^select_topic:"),
+                CallbackQueryHandler(_topic_refresh, pattern="^refresh_topics:"),
+                MessageHandler(filters.TEXT, _custom_topic),
+            ],
+            TOPIC_CONFIRM: [
+                CallbackQueryHandler(_topic_confirmed, pattern="^confirm_topic:"),
+                CallbackQueryHandler(_topic_back, pattern="^back_to_topics"),
+            ],
+        },
+        fallbacks=[CommandHandler("cancel", _cancel_conversation)],
+        per_message=False,
+    )
+    
+    # ─── Manual Review Flow ────────────────────────────
+    # Triggered by: Phase 7.5 (job needs human review)
+    #
+    # Step 1: Bot sends final video + QA scores
+    #   "🎬 REVIEW REQUIRED
+    #    Topic: {title}
+    #    Duration: 10:24
+    #    QA: 7.8/10 (below auto-publish threshold)
+    #    Reason: Sensitive political topic
+    #    [▶️ VIDEO ATTACHED]
+    #    
+    #    [✅ Approve & Publish] [✏️ Request Changes] [❌ Reject]"
+    #
+    # Step 2a: Approve → publish
+    # Step 2b: Request Changes → bot asks what to change
+    #   "What needs changing?
+    #    [🖼️ Specific Scene] [📝 Script] [🎵 Audio] [🎬 Full Regen]"
+    # Step 3: User specifies → pipeline handles regen → back to review
+    
+    REVIEW_DECISION, REVIEW_CHANGES, REVIEW_SCENE_SELECT = range(3)
+    
+    manual_review_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(
+            _review_entry, pattern="^review_ready:")
+        ],
+        states={
+            REVIEW_DECISION: [
+                CallbackQueryHandler(_review_approve, pattern="^approve_final:"),
+                CallbackQueryHandler(_review_changes, pattern="^request_changes:"),
+                CallbackQueryHandler(_review_reject, pattern="^reject_final:"),
+            ],
+            REVIEW_CHANGES: [
+                CallbackQueryHandler(_change_scene, pattern="^change_scene:"),
+                CallbackQueryHandler(_change_script, pattern="^change_script:"),
+                CallbackQueryHandler(_change_audio, pattern="^change_audio:"),
+                CallbackQueryHandler(_full_regen, pattern="^full_regen:"),
+            ],
+            REVIEW_SCENE_SELECT: [
+                CallbackQueryHandler(_scene_selected, pattern="^scene_change:"),
+                MessageHandler(filters.TEXT, _scene_custom_instruction),
+            ],
+        },
+        fallbacks=[CommandHandler("cancel", _cancel_conversation)],
+    )
+    
+    # ─── Interaction Patterns Summary ──────────────────
+    #
+    # PATTERN 1: Notification Only (no response needed)
+    #   Bot: "✅ Phase 3 complete. Script ready. Starting compliance..."
+    #   → No buttons, informational only
+    #
+    # PATTERN 2: Quick Action (single button press)
+    #   Bot: "⚠️ Job blocked: compliance issue"
+    #   [🔄 Retry] [❌ Cancel]
+    #   → One tap, immediate action
+    #
+    # PATTERN 3: Gallery Review (media + approval)
+    #   Bot: [Album of 15 images with captions]
+    #   Bot: "✅ 13/15 passed. [Approve All] [Regen Failed]"
+    #   → Review media, then single tap
+    #
+    # PATTERN 4: Conversation (multi-step)
+    #   Topic selection, manual review with changes
+    #   → Multiple steps, state tracked
+    #
+    # PATTERN 5: Text Input (user types response)
+    #   Prompt editing: user types new prompt
+    #   Custom topic: user types topic
+    #   → Freeform text, parsed by bot
+```
+
+### 12.7 Job Queue & Concurrency (`src/core/job_queue.py`)
+
+```python
+"""
+Job queue — manages multiple jobs on a single GPU.
+Only ONE job can use the GPU at a time, but multiple jobs
+can be in different lifecycle stages.
+
+Key insight: some phases need GPU, some don't.
+We can interleave GPU work from different jobs.
+"""
+
+class JobQueue:
+    """
+    QUEUE ARCHITECTURE:
+    ┌──────────────────────────────────────────────────────┐
+    │                    JOB QUEUE                          │
+    │                                                      │
+    │  Priority Levels:                                    │
+    │  P0 (urgent):    Trending topic hijack (time-sensitive)
+    │  P1 (normal):    Scheduled content calendar videos   │
+    │  P2 (background): Re-optimization, shorts generation │
+    │                                                      │
+    │  States:                                             │
+    │  ├── queued      → Waiting for GPU                   │
+    │  ├── active      → Currently running on GPU          │
+    │  ├── paused      → Waiting for human (manual review) │
+    │  ├── deferred    → Waiting for quota/time            │
+    │  └── completed   → Done (published or cancelled)     │
+    │                                                      │
+    │  CONCURRENCY MODEL:                                  │
+    │  ├── GPU phases: STRICTLY one at a time              │
+    │  ├── CPU phases: can run in parallel                 │
+    │  ├── Waiting phases: don't block the queue           │
+    │  └── Interleaving: if job A is waiting for human,    │
+    │      job B can start GPU work                        │
+    └──────────────────────────────────────────────────────┘
+    
+    DB table: job_queue
+    """
+    
+    SCHEMA = """
+    CREATE TABLE IF NOT EXISTS job_queue (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        job_id TEXT NOT NULL UNIQUE REFERENCES jobs(id),
+        priority INTEGER DEFAULT 1,          -- 0=urgent, 1=normal, 2=background
+        position INTEGER,                    -- Queue position
+        queued_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        started_at TIMESTAMP,
+        estimated_duration_min INTEGER,       -- Based on historical averages
+        
+        -- Scheduling
+        scheduled_start TIMESTAMP,            -- NULL = start ASAP
+        channel_id TEXT,                      -- Which YouTube channel
+        
+        CONSTRAINT valid_priority CHECK(priority IN (0, 1, 2))
+    );
+    CREATE INDEX IF NOT EXISTS idx_queue_priority ON job_queue(priority, position);
+    """
+    
+    def enqueue(self, job_id: str, priority: int = 1, 
+                scheduled_start: str = None) -> int:
+        """Add job to queue. Returns queue position."""
+        position = self._next_position(priority)
+        self.db.execute("""
+            INSERT INTO job_queue (job_id, priority, position, scheduled_start)
+            VALUES (?, ?, ?, ?)
+        """, (job_id, priority, position, scheduled_start))
+        self.db.commit()
+        
+        self.telegram.send(
+            f"📋 Job queued: {job_id}\n"
+            f"Priority: {'🔴 Urgent' if priority == 0 else '🟢 Normal' if priority == 1 else '🔵 Background'}\n"
+            f"Position: #{position}"
+        )
+        return position
+    
+    def get_next_job(self) -> Optional[str]:
+        """
+        Get the next job that should run.
+        Logic:
+        1. Check for P0 (urgent) jobs first
+        2. Then P1 by position
+        3. Then P2 if nothing else
+        4. Skip jobs whose scheduled_start is in the future
+        5. Skip if YouTube quota insufficient for publish
+        """
+        row = self.db.execute("""
+            SELECT job_id FROM job_queue 
+            WHERE job_id NOT IN (
+                SELECT id FROM jobs WHERE status IN ('published', 'cancelled', 'complete')
+            )
+            AND (scheduled_start IS NULL OR scheduled_start <= CURRENT_TIMESTAMP)
+            ORDER BY priority ASC, position ASC
+            LIMIT 1
+        """).fetchone()
+        return row["job_id"] if row else None
+    
+    def can_interleave(self, current_job_id: str) -> Optional[str]:
+        """
+        If current job is paused (manual_review, blocked), 
+        can another job use the GPU?
+        
+        Returns: job_id of interleave candidate, or None
+        """
+        current = self.db.get_job(current_job_id)
+        if current["status"] not in ("manual_review", "blocked"):
+            return None  # Current job is active — no interleave
+        
+        # Find next queued job
+        return self.get_next_job()
+    
+    def reorder(self, job_id: str, new_position: int):
+        """Move job to new position in queue."""
+        pass
+    
+    def promote(self, job_id: str):
+        """Promote to P0 (urgent). Used by trending_hijack agent."""
+        pass
+
+
+class QueueRunner:
+    """
+    Main loop that manages the queue.
+    Replaces the simple resume_all() from PipelineRunner.
+    
+    Loop:
+    1. Get next job from queue
+    2. Run it through PipelineRunner
+    3. If job pauses (manual_review) → check for interleave
+    4. If job completes → get next from queue
+    5. If queue empty → sleep and wait for new jobs
+    
+    INTERLEAVING EXAMPLE:
+    ─────────────────────
+    Time 00:00 — Job A starts (Phase 1: Research, GPU: Qwen)
+    Time 00:15 — Job A: Phase 1 done, topics sent to Telegram
+    Time 00:15 — Job A: PAUSED (waiting for Yusif to select topic)
+    Time 00:15 — Job B starts (Phase 1: Research, GPU: Qwen)  ← INTERLEAVE
+    Time 00:20 — Yusif selects topic for Job A
+    Time 00:20 — Job A queued for resume (waits for Job B's GPU phase to finish)
+    Time 00:30 — Job B: Phase 1 done, topics sent, PAUSED
+    Time 00:30 — Job A resumes (Phase 2: SEO, GPU: Qwen)     ← INTERLEAVE BACK
+    ...and so on
+    
+    This maximizes GPU utilization — GPU is idle only when:
+    - All jobs are paused (waiting for human)
+    - Queue is empty
+    - Service is unhealthy
+    """
+    
+    def run_forever(self):
+        """Main queue loop."""
+        while True:
+            job_id = self.queue.get_next_job()
+            
+            if job_id is None:
+                time.sleep(30)  # Nothing to do — check again in 30s
+                continue
+            
+            try:
+                result = self.pipeline.run_job(job_id)
+                
+                if result == "paused":
+                    # Job is waiting for human — try interleave
+                    next_job = self.queue.can_interleave(job_id)
+                    if next_job:
+                        logger.info(f"Interleaving: {job_id} paused, starting {next_job}")
+                        self.pipeline.run_job(next_job)
+                
+                elif result == "completed":
+                    logger.info(f"Job {job_id} completed")
+                
+                elif result == "blocked":
+                    logger.warning(f"Job {job_id} blocked — check Telegram")
+            
+            except Exception as e:
+                logger.error(f"Queue runner error: {e}")
+                time.sleep(60)  # Wait before retrying
+```
+
+### 12.8 Deployment & First Run (`SETUP.md`)
+
+> **This section goes into a separate SETUP.md file** for clarity.
+> Linked from ARCHITECTURE.md.
+
+```markdown
+# SETUP.md — First Run Guide
+
+## Prerequisites
+- OS: Ubuntu 22.04+ or Windows 11 with WSL2
+- GPU: NVIDIA RTX 3090 (24GB VRAM) with CUDA 12.x + cuDNN
+- CPU: i9-14900K (or equivalent)
+- RAM: 128GB
+- Disk: 1TB+ SSD (NVMe recommended)
+- Python: 3.11+
+- NVIDIA Driver: 545+
+
+## Step 1: System Setup
+
+### 1.1 NVIDIA + CUDA
+```bash
+# Verify GPU
+nvidia-smi
+
+# Install CUDA toolkit if not present
+# https://developer.nvidia.com/cuda-downloads
+```
+
+### 1.2 Python Environment
+```bash
+# Create virtual environment
+python3.11 -m venv .venv
+source .venv/bin/activate
+
+# Install core dependencies
+pip install -r requirements.txt
+```
+
+### 1.3 FFmpeg
+```bash
+# Ubuntu
+sudo apt install ffmpeg
+
+# Verify: ffmpeg -version (need 5.0+)
+```
+
+## Step 2: Model Downloads (~80GB total)
+
+### 2.1 Ollama + Qwen Models
+```bash
+# Install Ollama
+curl -fsSL https://ollama.com/install.sh | sh
+
+# Download models
+ollama pull qwen2.5:72b-instruct-q4_K_M    # ~42GB, Arabic text LLM
+ollama pull qwen2.5-vl:72b-instruct-q4_K_M  # ~42GB, Vision LLM (shares layers with above)
+
+# Configure: keep_alive=0 (free VRAM after each use)
+echo 'OLLAMA_KEEP_ALIVE=0' >> /etc/environment
+systemctl restart ollama
+
+# Verify
+ollama run qwen2.5:72b "مرحبا، كيف حالك؟"
+```
+
+### 2.2 ComfyUI + Models
+```bash
+# Clone ComfyUI
+git clone https://github.com/comfyanonymous/ComfyUI.git
+cd ComfyUI
+pip install -r requirements.txt
+
+# Download FLUX.1-dev (~12GB)
+# Place in: ComfyUI/models/unet/flux1-dev.safetensors
+wget https://huggingface.co/black-forest-labs/FLUX.1-dev/resolve/main/flux1-dev.safetensors \
+     -O models/unet/flux1-dev.safetensors
+
+# Download FLUX VAE
+wget https://huggingface.co/black-forest-labs/FLUX.1-dev/resolve/main/ae.safetensors \
+     -O models/vae/flux1-ae.safetensors
+
+# Download FLUX CLIP encoders
+wget https://huggingface.co/comfyanonymous/flux_text_encoders/resolve/main/clip_l.safetensors \
+     -O models/clip/clip_l.safetensors
+wget https://huggingface.co/comfyanonymous/flux_text_encoders/resolve/main/t5xxl_fp8_e4m3fn.safetensors \
+     -O models/clip/t5xxl_fp8.safetensors
+
+# Download LTX-Video 2.3 (~8GB)
+# Check: https://huggingface.co/Lightricks/LTX-Video
+wget https://huggingface.co/Lightricks/LTX-Video/resolve/main/ltx-video-2.3.safetensors \
+     -O models/checkpoints/ltx-video-2.3.safetensors
+
+# Start ComfyUI
+python main.py --listen 0.0.0.0 --port 8188
+# Verify: http://localhost:8188
+```
+
+### 2.3 Fish Speech 1.5
+```bash
+git clone https://github.com/fishaudio/fish-speech.git
+cd fish-speech
+pip install -e .
+
+# Download model
+huggingface-cli download fishaudio/fish-speech-1.5 --local-dir checkpoints/fish-speech-1.5
+
+# Verify
+python -m tools.api --checkpoint checkpoints/fish-speech-1.5 --listen 0.0.0.0:8080
+```
+
+### 2.4 MusicGen + AudioGen
+```bash
+pip install audiocraft
+
+# Models auto-download on first use (~3GB each)
+# Verify:
+python -c "from audiocraft.models import MusicGen; m = MusicGen.get_pretrained('facebook/musicgen-medium'); print('OK')"
+```
+
+### 2.5 Whisper (for Audio QA)
+```bash
+pip install openai-whisper
+# Or faster: pip install faster-whisper
+
+# Model auto-downloads on first use (~1GB for 'base')
+```
+
+## Step 3: Arabic Fonts
+```bash
+# Download all fonts to src/phase5_production/fonts/
+mkdir -p src/phase5_production/fonts
+
+# Google Fonts (all free)
+FONTS=(
+    "IBM+Plex+Sans+Arabic"
+    "Noto+Naskh+Arabic" 
+    "Amiri"
+    "Aref+Ruqaa"
+    "Cairo"
+    "Tajawal"
+    "Scheherazade+New"
+    "Readex+Pro"
+    "El+Messiri"
+    "Lemonada"
+    "Noto+Sans+Arabic"
+)
+
+for font in "${FONTS[@]}"; do
+    wget "https://fonts.google.com/download?family=${font}" -O "/tmp/${font}.zip"
+    unzip "/tmp/${font}.zip" -d "src/phase5_production/fonts/${font//+/_}/"
+done
+
+# Install system-wide (for PyCairo/Pango)
+sudo cp -r src/phase5_production/fonts/* /usr/share/fonts/truetype/
+fc-cache -f -v
+```
+
+## Step 4: Configuration
+```bash
+# Copy example config
+cp settings.example.yaml settings.yaml
+cp channels.example.yaml channels.yaml
+
+# Edit settings.yaml:
+# - telegram.bot_token
+# - telegram.chat_id
+# - youtube.client_secret_path
+# - paths to ComfyUI, Fish Speech
+# - GPU settings
+
+# YouTube API setup:
+# 1. Go to https://console.cloud.google.com
+# 2. Create project → Enable YouTube Data API v3
+# 3. Create OAuth 2.0 credentials
+# 4. Download client_secret.json → place in config/
+# 5. First run will prompt for browser auth
+```
+
+## Step 5: Database Init
+```bash
+# Initialize database (creates all tables)
+python -m src.core.database --init
+
+# Verify
+sqlite3 data/factory.db ".tables"
+# Should show: jobs, scenes, qa_rubrics, asset_versions, events, ...
+```
+
+## Step 6: Verify Everything
+```bash
+python -m src.core.health_check
+
+# Should output:
+# ✅ Ollama: running, qwen2.5:72b available
+# ✅ ComfyUI: running on :8188, FLUX loaded
+# ✅ Fish Speech: running on :8080
+# ✅ FFmpeg: v5.1.2
+# ✅ GPU: RTX 3090, 24GB VRAM, driver 545.x
+# ✅ RAM: 128GB (112GB available)
+# ✅ Disk: 847GB free
+# ✅ Telegram: bot connected, chat_id verified
+# ✅ YouTube: OAuth valid, quota 10,000/10,000
+# ✅ Fonts: 11/11 installed
+# ✅ Database: 18 tables, WAL mode
+# 
+# 🟢 ALL SYSTEMS GO — Ready to produce videos!
+```
+
+## Step 7: First Video (test run)
+```bash
+# Start the factory
+python -m src.main
+
+# Or via Telegram:
+# Send /new to the bot → follow topic selection → watch it work
+```
+```
+
+### 12.9 Database Backup (`src/core/db_backup.py`)
+
+```python
+"""
+SQLite backup strategy.
+DB corruption = EVERYTHING lost (jobs, scenes, rubrics, analytics, events, versions).
+This is unacceptable.
+"""
+
+class DatabaseBackup:
+    """
+    BACKUP STRATEGY:
+    ┌──────────────────────────────────────────────────────────┐
+    │                                                          │
+    │  LEVEL 1: WAL Checkpointing (automatic, every 5 min)   │
+    │  ├── SQLite WAL mode already enabled                     │
+    │  ├── PRAGMA wal_checkpoint(PASSIVE) every 5 minutes      │
+    │  ├── Ensures WAL file doesn't grow unbounded             │
+    │  └── Low overhead, always running                        │
+    │                                                          │
+    │  LEVEL 2: Hot Backup (hourly)                           │
+    │  ├── sqlite3 .backup API (safe, no locking needed)       │
+    │  ├── Saves to: backups/hourly/factory_YYYYMMDD_HH.db    │
+    │  ├── Keep last 48 hourly backups (2 days)                │
+    │  └── Rotate: delete oldest when > 48                     │
+    │                                                          │
+    │  LEVEL 3: Daily Snapshot (daily, 2 AM)                  │
+    │  ├── Full backup + VACUUM into clean copy                │
+    │  ├── Saves to: backups/daily/factory_YYYYMMDD.db         │
+    │  ├── Compress with zstd → ~60-80% size reduction         │
+    │  ├── Keep last 30 daily backups                          │
+    │  └── Integrity check: PRAGMA integrity_check on backup   │
+    │                                                          │
+    │  LEVEL 4: Off-site (optional, weekly)                   │
+    │  ├── Copy daily snapshot to external drive / cloud       │
+    │  ├── rclone to Google Drive / S3 / etc.                  │
+    │  └── Telegram: send compressed DB as document (< 50MB)   │
+    │                                                          │
+    │  RECOVERY:                                               │
+    │  ├── Detect corruption: PRAGMA integrity_check on start  │
+    │  ├── Auto-recover: load latest valid backup              │
+    │  ├── Alert Yusif with recovery details                   │
+    │  └── Resume pipeline from last checkpoint                │
+    └──────────────────────────────────────────────────────────┘
+    """
+    
+    def __init__(self, db_path: str, backup_dir: str = "backups"):
+        self.db_path = db_path
+        self.backup_dir = backup_dir
+        os.makedirs(f"{backup_dir}/hourly", exist_ok=True)
+        os.makedirs(f"{backup_dir}/daily", exist_ok=True)
+    
+    def wal_checkpoint(self):
+        """Level 1: WAL checkpoint (every 5 min via scheduler)."""
+        conn = sqlite3.connect(self.db_path)
+        conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+        conn.close()
+    
+    def hot_backup(self):
+        """Level 2: Hourly hot backup using sqlite3 backup API."""
+        timestamp = datetime.now().strftime("%Y%m%d_%H")
+        backup_path = f"{self.backup_dir}/hourly/factory_{timestamp}.db"
+        
+        src = sqlite3.connect(self.db_path)
+        dst = sqlite3.connect(backup_path)
+        src.backup(dst)
+        dst.close()
+        src.close()
+        
+        # Rotate: keep last 48
+        self._rotate_backups(f"{self.backup_dir}/hourly", keep=48)
+        
+        logger.info(f"Hourly backup: {backup_path} ({os.path.getsize(backup_path) / 1024 / 1024:.1f}MB)")
+    
+    def daily_snapshot(self):
+        """Level 3: Daily snapshot with VACUUM + compress + integrity check."""
+        timestamp = datetime.now().strftime("%Y%m%d")
+        snapshot_path = f"{self.backup_dir}/daily/factory_{timestamp}.db"
+        compressed_path = f"{snapshot_path}.zst"
+        
+        # Backup
+        src = sqlite3.connect(self.db_path)
+        dst = sqlite3.connect(snapshot_path)
+        src.backup(dst)
+        
+        # VACUUM the backup (not the live DB)
+        dst.execute("VACUUM")
+        
+        # Integrity check
+        result = dst.execute("PRAGMA integrity_check").fetchone()
+        if result[0] != "ok":
+            self.telegram.alert(f"🚨 DB integrity check FAILED on daily backup: {result}")
+            dst.close()
+            src.close()
+            return
+        
+        dst.close()
+        src.close()
+        
+        # Compress
+        subprocess.run(["zstd", "-19", "--rm", snapshot_path], check=True)
+        
+        # Rotate: keep last 30
+        self._rotate_backups(f"{self.backup_dir}/daily", keep=30)
+        
+        size_mb = os.path.getsize(compressed_path) / 1024 / 1024
+        logger.info(f"Daily snapshot: {compressed_path} ({size_mb:.1f}MB)")
+    
+    def check_and_recover(self) -> bool:
+        """
+        Run on startup. Returns True if DB is healthy.
+        If corrupt → auto-recover from latest backup.
+        """
+        try:
+            conn = sqlite3.connect(self.db_path)
+            result = conn.execute("PRAGMA integrity_check").fetchone()
+            conn.close()
+            
+            if result[0] == "ok":
+                return True
+            
+            # CORRUPT — recover
+            logger.error(f"DB CORRUPT: {result}")
+            self.telegram.alert("🚨 DATABASE CORRUPTION DETECTED — auto-recovering...")
+            
+            return self._recover_from_backup()
+        
+        except Exception as e:
+            logger.error(f"DB unreadable: {e}")
+            return self._recover_from_backup()
+    
+    def _recover_from_backup(self) -> bool:
+        """Find latest valid backup and restore."""
+        # Try hourly backups first (most recent)
+        for backup in sorted(
+            glob.glob(f"{self.backup_dir}/hourly/*.db"),
+            reverse=True
+        ):
+            try:
+                conn = sqlite3.connect(backup)
+                result = conn.execute("PRAGMA integrity_check").fetchone()
+                conn.close()
+                
+                if result[0] == "ok":
+                    # Valid backup found — restore
+                    shutil.copy2(backup, self.db_path)
+                    self.telegram.alert(
+                        f"✅ DB recovered from: {os.path.basename(backup)}\n"
+                        f"Some recent data may be lost (since last hourly backup)."
+                    )
+                    return True
+            except:
+                continue
+        
+        # Try daily snapshots (decompress first)
+        for backup in sorted(
+            glob.glob(f"{self.backup_dir}/daily/*.db.zst"),
+            reverse=True
+        ):
+            try:
+                decompressed = backup.replace(".zst", "")
+                subprocess.run(["zstd", "-d", backup, "-o", decompressed], check=True)
+                
+                conn = sqlite3.connect(decompressed)
+                result = conn.execute("PRAGMA integrity_check").fetchone()
+                conn.close()
+                
+                if result[0] == "ok":
+                    shutil.copy2(decompressed, self.db_path)
+                    os.remove(decompressed)
+                    self.telegram.alert(
+                        f"✅ DB recovered from daily snapshot: {os.path.basename(backup)}\n"
+                        f"⚠️ Data loss: everything since this snapshot."
+                    )
+                    return True
+                
+                os.remove(decompressed)
+            except:
+                continue
+        
+        # No valid backup found
+        self.telegram.alert(
+            "🚨🚨 CRITICAL: No valid backup found. Database unrecoverable.\n"
+            "Manual intervention required."
+        )
+        return False
+    
+    def _rotate_backups(self, directory: str, keep: int):
+        """Delete oldest backups, keep last N."""
+        files = sorted(glob.glob(f"{directory}/*"), key=os.path.getmtime)
+        while len(files) > keep:
+            os.remove(files.pop(0))
+
+
+# ═══ SCHEDULER INTEGRATION ═══
+# In main.py startup:
+#
+# backup = DatabaseBackup("data/factory.db")
+# 
+# # Check DB integrity on start
+# if not backup.check_and_recover():
+#     sys.exit("FATAL: Database unrecoverable")
+#
+# # Schedule backups
+# scheduler.add_job(backup.wal_checkpoint, 'interval', minutes=5)
+# scheduler.add_job(backup.hot_backup, 'interval', hours=1)
+# scheduler.add_job(backup.daily_snapshot, 'cron', hour=2, minute=0)
+```
+
+---
+
 ## 13. Critical Rules for AI Builder
 
 ### Architecture Rules
@@ -5339,3 +6346,11 @@ class ServiceWatchdog(threading.Thread):
 14. **NEVER hardcode paths.** Everything comes from config/settings.yaml.
 15. **ALWAYS save intermediate outputs to disk** (not just DB). Pipeline must be resumable.
 16. **Status changes → DB + EventStore.** Both must be updated atomically.
+
+### Operational Rules
+17. **ALWAYS use AssetVersioner for generated assets.** Never overwrite — version and symlink.
+18. **ALWAYS wrap external service calls in RetryEngine.** No bare API calls without retry.
+19. **ALWAYS check QuotaTracker.can_afford() before YouTube API calls.** Quota exhaustion = silent failures.
+20. **NEVER bypass the job queue.** All jobs go through JobQueue, even manual /new commands.
+21. **ALWAYS run DatabaseBackup.check_and_recover() on startup.** Before anything else.
+22. **Telegram callbacks MUST acknowledge within 5 seconds** (query.answer()). Slow handlers → background task.

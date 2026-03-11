@@ -1195,6 +1195,58 @@ Generate all media assets — images, video clips, voice, music, SFX — and com
 - **Auto-scheduling:** if quota insufficient → schedule operation for after midnight reset
 - **Alerts:** Telegram warning when quota < 2,000 remaining
 
+#### Telegram Bot Architecture
+- **Framework:** python-telegram-bot v20+ (async)
+- **3 layers:**
+  - **Core Bot:** Connection, media sending (albums, videos), rate limiting (25 msg/sec)
+  - **Handlers:** Command routing (/status, /queue, /cancel, /retry, /quota, /disk, /health, /new, /settings) + inline button callback routing by prefix (`approve_images:`, `regen_scene:`, `select_topic:`, `rollback:`, `edit_prompt:`, etc.)
+  - **Conversations:** Multi-step flows with state tracking:
+    - Topic Selection: 5 topics with scores → user taps → pipeline continues (or types custom topic)
+    - Manual Review: final video + QA scores → Approve / Request Changes (scene/script/audio/full regen) / Reject
+    - Prompt Editing: user types new visual prompt → regen specific scene
+- **5 interaction patterns:**
+  1. Notification only (no response needed): "Phase 3 complete"
+  2. Quick action (single button): "Job blocked" → [Retry] [Cancel]
+  3. Gallery review (media + approval): album of 15 images → [Approve All]
+  4. Conversation (multi-step): topic selection, manual review with changes
+  5. Text input (freeform): prompt editing, custom topic
+- **Video sending:** < 50MB as video (with preview), > 50MB as document
+- **Album limit:** 10 images per album, auto-split for more
+
+#### Job Queue & Concurrency
+- **Problem:** GPU is idle when job waits for human. Waste.
+- **Solution:** Job queue with interleaving
+- **Priority levels:** P0 (urgent/trending), P1 (normal/scheduled), P2 (background/shorts)
+- **Concurrency model:**
+  - GPU phases: ONE at a time (strict)
+  - CPU phases: can run in parallel
+  - Waiting phases (manual_review): DON'T block queue
+  - **Interleaving:** Job A paused for review → Job B starts GPU work → Yusif approves A → A queues for resume
+- **Max throughput:** 3-4 videos/day (GPU-limited + YouTube quota-limited)
+
+#### Database Backup
+- **4 levels of protection:**
+  | Level | Frequency | Retention | Method |
+  |-------|-----------|-----------|--------|
+  | WAL Checkpoint | 5 min | — | PRAGMA wal_checkpoint |
+  | Hot Backup | Hourly | 48 backups (2 days) | sqlite3 .backup API |
+  | Daily Snapshot | 2 AM daily | 30 snapshots | VACUUM + zstd compress + integrity check |
+  | Off-site | Weekly | ∞ | rclone to cloud / Telegram document |
+- **Auto-recovery on startup:** PRAGMA integrity_check → if corrupt → find latest valid backup → restore → alert Yusif
+- **Worst case data loss:** < 1 hour (hourly backup)
+
+#### Deployment & First Run
+- **Full setup guide in SETUP.md** — step-by-step for AI builder or human:
+  1. System setup (CUDA, Python 3.11, FFmpeg)
+  2. Model downloads (~80GB): Qwen 72B, Qwen2.5-VL, FLUX, LTX-2.3, Fish Speech, MusicGen, Whisper
+  3. ComfyUI setup + workflows
+  4. Arabic font installation (11 families from Google Fonts)
+  5. Configuration (settings.yaml, channels.yaml, YouTube OAuth)
+  6. Database initialization
+  7. Health check verification (all services green)
+  8. First video test run
+- **Verification command:** `python -m src.core.health_check` → checks all 12 components
+
 #### Service Watchdog (background thread)
 - **Monitors every 30 seconds:**
   | Check | Warning | Critical |
