@@ -1195,6 +1195,26 @@ Generate all media assets — images, video clips, voice, music, SFX — and com
 - **Auto-scheduling:** if quota insufficient → schedule operation for after midnight reset
 - **Alerts:** Telegram warning when quota < 2,000 remaining
 
+#### Distributed Tracing (Event Debugging)
+- **Problem:** 40 agents + EventBus + 9 phases = hundreds of events per video. Without tracing, debugging is a nightmare.
+- **Solution:** Every event carries tracing context:
+  | Field | Purpose |
+  |-------|---------|
+  | `trace_id` | Groups all events in one job run (shared across entire pipeline) |
+  | `span_id` | Unique per event (identifies this specific operation) |
+  | `parent_span_id` | Links to parent operation (builds call tree) |
+  | `source` | Which component emitted: "phase6a.image_checker", "gpu_manager" |
+  | `severity` | debug / info / warn / error / critical |
+  | `duration_ms` | How long the operation took |
+- **Debugging workflow:**
+  1. Job fails → get trace_id
+  2. `SELECT * FROM events WHERE trace_id = ? ORDER BY timestamp`
+  3. See COMPLETE hierarchical trace: every phase, check, retry, decision
+  4. `get_slow_operations()` → find bottlenecks instantly
+  5. `get_trace_tree()` → build parent→child hierarchy for visual debugging
+- **Telegram:** `/trace job_id` → returns summary with errors highlighted and slow steps flagged
+- **TracingContext class** passed through entire pipeline — every component uses `with trace.span("component.method")` for automatic duration tracking
+
 #### Telegram Bot Architecture
 - **Framework:** python-telegram-bot v20+ (async)
 - **3 layers:**
@@ -3038,29 +3058,62 @@ Optimize and publish videos to YouTube with maximum discoverability.
 
 ---
 
-## Phase 7.5: Manual Review Gate (Optional) ✅👤 HUMAN GATE
+## Phase 7.5: Manual Review Gate ✅👤 HUMAN GATE
 
-### Purpose
-**Optional human checkpoint before publishing.** Prevents weak videos from going live and damaging channel reputation.
+> ⚠️ **THE MOST IMPORTANT PHASE IN THE ENTIRE SYSTEM.**
+> 
+> YouTube in 2026 is extremely sophisticated. No amount of automated QA replaces human judgment.
+> Vision QA can say "image looks good" but cannot answer "would I be proud to publish this?"
+> 
+> **This phase is NOT optional for speed.** A single YouTube strike can:
+> - Demonetize the channel for months
+> - Remove features (live streaming, shorts monetization)
+> - Terminate the channel permanently (3 strikes)
+> 
+> **The 3 minutes you spend reviewing > the 3 months recovering from a strike.**
 
 ### Configuration
 ```yaml
 manual_review:
   enabled: true                    # Global toggle
-  mode: "selective"                # "all" | "selective" | "off"
+  mode: "all"                      # "all" | "selective" | "off"
   
-  # Selective mode rules:
-  auto_publish_if:
-    - all_qa_scores_above: 8       # Phase 4 + 6 + 7 all scored 8+
-    - channel_has_published: 20    # Channel already has 20+ successful videos
-    - topic_is_not: "politics"     # Non-sensitive topic
+  # ═══ MODE: "all" (RECOMMENDED for first 50 videos) ═══
+  # Every video gets reviewed. No exceptions. No shortcuts.
+  # This builds your intuition for what the system produces.
+  # Switch to "selective" only after 50+ consistent videos.
+  
+  # ═══ MODE: "selective" (after 50+ proven videos) ═══
+  # Auto-publish ONLY if ALL conditions met (strict):
+  auto_publish_requires_ALL:
+    all_qa_scores_above: 8.5       # 8.5 not 8.0 — be strict
+    channel_has_published: 20      # Established channel only
+    no_youtube_strikes_days: 90    # Clean record
+    no_qa_flags: true              # Zero flags from any QA phase
+    not_first_in_category: true    # Not exploring new territory
     
-  require_review_if:
-    - any_qa_score_below: 7        # Any QA gate scored below 7
-    - topic_category: "politics"   # Sensitive topics always need review
-    - first_video_on_channel: true # First 10 videos on any new channel
-    - trending_hijack: true        # Fast-tracked content
-    - new_narrative_style: true    # First time using a new style
+  # ALWAYS require review (non-negotiable, overrides auto-publish):
+  always_review:
+    - politics                     # Any political content
+    - political_analysis
+    - geopolitics
+    - religion                     # Any religious content
+    - islamic
+    - war                          # Military/conflict
+    - military_conflict
+    - terrorism
+    - legal                        # Legal matters
+    - crime
+    - human_rights
+    - biography_living_person      # Real living people
+    - trending_hijack              # Fast-tracked (less QA time)
+    - first_video_on_channel       # First 10 on new channel
+    - new_narrative_style          # First use of new style
+  
+  # ═══ MODE: "off" (NEVER RECOMMENDED) ═══
+  # System accepts this but logs CRITICAL warning on every publish.
+  # You accept full risk of strikes, demonetization, channel termination.
+  # Only valid use: private/unlisted test videos.
 ```
 
 ### Review Flow

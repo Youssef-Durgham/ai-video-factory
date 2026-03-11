@@ -909,23 +909,107 @@ class GateEvaluator:
         return GateResult(passed=True, action="continue", score=content_score)
     
     def evaluate_manual_review_needed(self, job: dict, config: dict) -> bool:
-        """Phase 7.5: Should this job go to manual review?"""
+        """
+        Phase 7.5: Should this job go to manual review?
+        
+        ⚠️ CRITICAL DESIGN DECISION: Manual Review is the MOST IMPORTANT phase.
+        ════════════════════════════════════════════════════════════════════════
+        
+        YouTube in 2026 is extremely sophisticated at detecting:
+        - Low-effort AI content → demonetization, reduced reach
+        - Policy violations → strikes, channel termination
+        - Misleading content → community guideline strikes
+        
+        No matter how good Vision QA is, it CANNOT replace human judgment for:
+        - "Does this video feel right?"
+        - "Would I be embarrassed if this went public?"
+        - "Is this actually good enough for my channel?"
+        
+        MODES:
+        ├── "all" (RECOMMENDED for first 50 videos)
+        │   → Every video gets manual review. No exceptions.
+        │   → This builds your intuition for what the system produces.
+        │   
+        ├── "selective" (after 50+ videos with consistent quality)
+        │   → Auto-publish ONLY if ALL conditions met:
+        │     ├── QA scores > 8.5 (not 8.0 — be strict)
+        │     ├── Topic is NOT in sensitive_categories
+        │     ├── No human flags from ANY QA phase
+        │     ├── Channel has >20 videos published (established)
+        │     ├── No YouTube strikes in last 90 days
+        │     └── Not a "first video" on a new topic category
+        │   → Everything else → manual review
+        │   
+        └── "off" (NEVER RECOMMENDED)
+            → ⚠️ Config accepts this but logs a CRITICAL warning every time
+            → "Manual review disabled — publishing without human verification"
+            → If you use this, you accept the risk of strikes/demonetization
+        
+        IMPORTANT: Even in "selective" mode, certain videos ALWAYS get reviewed:
+        ├── Political content (any mention of politics, leaders, conflicts)
+        ├── Religious content (any mention of religion, sects, beliefs)
+        ├── Historical claims (wars, massacres, disputed events)
+        ├── Content about real living people
+        ├── Content about ongoing legal matters
+        ├── First video in a new topic category
+        └── Any video where ANY QA phase flagged something
+        """
         review_config = config["settings"]["manual_review"]
         
+        # Mode: off (STRONGLY discouraged)
         if not review_config["enabled"] or review_config["mode"] == "off":
+            logger.critical(
+                "⚠️ MANUAL REVIEW DISABLED — publishing without human verification. "
+                "This is risky. YouTube strikes can terminate your channel."
+            )
             return False
         
+        # Mode: all (recommended for first 50 videos)
         if review_config["mode"] == "all":
             return True
         
-        # Selective mode
-        if job.get("topic_category") in review_config.get("sensitive_categories", []):
-            return True
+        # Mode: selective — STRICT conditions for auto-publish
+        # ═══ ALWAYS REVIEW (non-negotiable) ═══
+        always_review_categories = [
+            "politics", "political_analysis", "geopolitics",
+            "religion", "islamic", "sectarian",
+            "war", "military_conflict", "terrorism",
+            "legal", "crime", "human_rights",
+            "biography_living_person",
+        ]
+        if job.get("topic_category") in always_review_categories:
+            return True  # ALWAYS review sensitive content
         
-        # Check QA scores
-        min_score = review_config.get("auto_publish_min_score", 8.0)
-        # ... check all QA scores against min_score
+        # Check if any QA phase flagged anything
+        flags = self.db.get_job_flags(job["id"])
+        if any(f["severity"] in ("warn", "error") for f in flags):
+            return True  # Any flag → review
         
+        # Check QA scores — ALL must be above STRICT threshold
+        min_score = review_config.get("auto_publish_min_score", 8.5)
+        rubric_stats = self.db.get_rubric_stats(job["id"])
+        for stat in rubric_stats:
+            if stat["avg_score"] < min_score:
+                return True  # Below threshold → review
+        
+        # Check channel maturity
+        channel_video_count = self.db.count_published_videos(job["channel_id"])
+        if channel_video_count < 20:
+            return True  # New channel → review everything
+        
+        # Check for recent strikes
+        recent_strikes = self.db.get_recent_strikes(job["channel_id"], days=90)
+        if recent_strikes:
+            return True  # Recent trouble → review
+        
+        # Check if first video in this topic category
+        category_count = self.db.count_videos_in_category(
+            job["channel_id"], job["topic_category"]
+        )
+        if category_count == 0:
+            return True  # First in category → review
+        
+        # ALL conditions passed → safe to auto-publish
         return False
 ```
 
@@ -1136,14 +1220,66 @@ class EventBus:
 
 # ═══ src/core/event_store.py ═══
 """
-Persists all events to SQLite for audit trail and replay.
+Persists all events to SQLite for audit trail, TRACING, and replay.
+
+⚠️ CRITICAL: With 40 agents + EventBus, debugging is a nightmare
+without proper tracing. Every event MUST carry trace context.
 """
+
+import uuid
+
+
+@dataclass
+class Event:
+    """Enhanced Event with distributed tracing fields."""
+    type: EventType
+    job_id: str = ""
+    data: dict = field(default_factory=dict)
+    timestamp: datetime = field(default_factory=datetime.now)
+    
+    # ─── TRACING FIELDS (mandatory for debugging) ───
+    trace_id: str = ""          # Unique per job run (all events in one job share this)
+    span_id: str = ""           # Unique per event
+    parent_span_id: str = ""    # Links child events to parent (phase → sub-step)
+    source: str = ""            # Which component emitted: "phase6a.image_checker", "gpu_manager"
+    severity: str = "info"      # "debug" | "info" | "warn" | "error" | "critical"
+    duration_ms: int = 0        # How long the operation took (for perf analysis)
+
 
 class EventStore:
     """
-    Persistent event log.
-    Every event emitted by EventBus is stored here.
-    Used for: audit trail, debugging, crash analysis, analytics.
+    Persistent event log with FULL tracing support.
+    
+    Why tracing matters:
+    ├── 40 agents + 9 phases + sub-phases = hundreds of events per job
+    ├── Without trace_id: "which events belong to this job run?"
+    ├── Without span_id: "in what order did things happen?"
+    ├── Without parent_span: "image_checker failed, but WHO called it?"
+    ├── Without source: "which of the 40 agents emitted this?"
+    └── Without duration_ms: "what's slow? where's the bottleneck?"
+    
+    DEBUGGING WORKFLOW:
+    ─────────────────
+    1. Job fails → get trace_id from job table
+    2. SELECT * FROM events WHERE trace_id = ? ORDER BY timestamp
+    3. See COMPLETE history: every phase, every check, every retry, every decision
+    4. parent_span_id shows call hierarchy:
+       
+       pipeline_runner.run_job (span: abc)
+       ├── phase_executor.execute:IMAGE_QA (span: def, parent: abc)
+       │   ├── image_checker.verify (span: ghi, parent: def)
+       │   │   ├── deterministic.ocr (span: jkl, parent: ghi) → 45ms
+       │   │   ├── deterministic.nsfw (span: mno, parent: ghi) → 12ms
+       │   │   └── vision.rubric (span: pqr, parent: ghi) → 3400ms ← SLOW
+       │   ├── image_checker.verify (span: stu, parent: def) → scene 2
+       │   └── style_checker.check (span: vwx, parent: def)
+       └── resource_coordinator.unload (span: yz1, parent: abc)
+    
+    5. Instantly see: vision rubric took 3.4s per image × 15 = 51s total
+    
+    TELEGRAM DEBUG COMMAND:
+    /trace job_20260315_120000
+    → Returns: summary of all events, highlighting errors and slow steps
     """
     
     SCHEMA = """
@@ -1151,15 +1287,22 @@ class EventStore:
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         event_type TEXT NOT NULL,
         job_id TEXT,
+        trace_id TEXT NOT NULL,           -- Groups all events in one job run
+        span_id TEXT NOT NULL,            -- Unique per event
+        parent_span_id TEXT,              -- Parent event (call hierarchy)
+        source TEXT,                      -- Component that emitted
+        severity TEXT DEFAULT 'info',     -- debug/info/warn/error/critical
+        duration_ms INTEGER DEFAULT 0,   -- Operation duration
         data JSON,
-        timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        
-        -- Indexes for common queries
-        CONSTRAINT idx_event_type CHECK(event_type IS NOT NULL)
+        timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
     CREATE INDEX IF NOT EXISTS idx_events_type ON events(event_type);
     CREATE INDEX IF NOT EXISTS idx_events_job ON events(job_id);
+    CREATE INDEX IF NOT EXISTS idx_events_trace ON events(trace_id);
+    CREATE INDEX IF NOT EXISTS idx_events_parent ON events(parent_span_id);
     CREATE INDEX IF NOT EXISTS idx_events_time ON events(timestamp);
+    CREATE INDEX IF NOT EXISTS idx_events_severity ON events(severity);
+    CREATE INDEX IF NOT EXISTS idx_events_source ON events(source);
     """
     
     def __init__(self, db):
@@ -1167,18 +1310,70 @@ class EventStore:
         self.db.conn.executescript(self.SCHEMA)
     
     def store(self, event: Event):
-        """Store event — called as global subscriber on EventBus."""
-        self.db.conn.execute(
-            "INSERT INTO events (event_type, job_id, data, timestamp) VALUES (?, ?, ?, ?)",
-            (event.type.value, event.job_id, json.dumps(event.data), event.timestamp)
-        )
+        """Store event with full tracing context."""
+        if not event.span_id:
+            event.span_id = str(uuid.uuid4())[:8]
+        
+        self.db.conn.execute("""
+            INSERT INTO events (event_type, job_id, trace_id, span_id, parent_span_id,
+                source, severity, duration_ms, data, timestamp)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            event.type.value, event.job_id, event.trace_id, event.span_id,
+            event.parent_span_id, event.source, event.severity,
+            event.duration_ms, json.dumps(event.data), event.timestamp
+        ))
         self.db.conn.commit()
     
-    def get_job_events(self, job_id: str) -> list[dict]:
-        """Get all events for a job — for debugging/audit."""
-        rows = self.db.conn.execute(
-            "SELECT * FROM events WHERE job_id = ? ORDER BY timestamp", (job_id,)
+    def get_job_trace(self, job_id: str) -> list[dict]:
+        """Get complete trace for a job — THE primary debugging tool."""
+        rows = self.db.conn.execute("""
+            SELECT * FROM events WHERE job_id = ? 
+            ORDER BY timestamp ASC
+        """, (job_id,)).fetchall()
+        return [dict(r) for r in rows]
+    
+    def get_trace_tree(self, trace_id: str) -> dict:
+        """Build hierarchical trace tree from flat events."""
+        events = self.db.conn.execute(
+            "SELECT * FROM events WHERE trace_id = ? ORDER BY timestamp",
+            (trace_id,)
         ).fetchall()
+        
+        # Build tree: parent_span_id → children
+        by_span = {e["span_id"]: dict(e) for e in events}
+        roots = []
+        for e in events:
+            e_dict = by_span[e["span_id"]]
+            parent = e["parent_span_id"]
+            if parent and parent in by_span:
+                by_span[parent].setdefault("children", []).append(e_dict)
+            else:
+                roots.append(e_dict)
+        return roots
+    
+    def get_errors(self, job_id: str = None, hours: int = 24) -> list[dict]:
+        """Get recent errors/criticals — for /health command."""
+        query = """
+            SELECT * FROM events 
+            WHERE severity IN ('error', 'critical')
+            AND timestamp > datetime('now', ?)
+        """
+        params = [f"-{hours} hours"]
+        if job_id:
+            query += " AND job_id = ?"
+            params.append(job_id)
+        query += " ORDER BY timestamp DESC LIMIT 50"
+        return [dict(r) for r in self.db.conn.execute(query, params).fetchall()]
+    
+    def get_slow_operations(self, job_id: str, threshold_ms: int = 5000) -> list[dict]:
+        """Find operations that took longer than threshold — bottleneck finder."""
+        rows = self.db.conn.execute("""
+            SELECT source, event_type, duration_ms, span_id, data
+            FROM events 
+            WHERE job_id = ? AND duration_ms > ?
+            ORDER BY duration_ms DESC
+        """, (job_id, threshold_ms)).fetchall()
         return [dict(r) for r in rows]
     
     def get_recent(self, event_type: str = None, limit: int = 100) -> list[dict]:
@@ -1191,6 +1386,93 @@ class EventStore:
         params.append(limit)
         rows = self.db.conn.execute(query, params).fetchall()
         return [dict(r) for r in rows]
+```
+
+### 4.5.1 Tracing Context (`src/core/tracing.py`)
+
+```python
+"""
+Tracing context — passed through the entire pipeline.
+Every component uses this to emit properly-linked events.
+"""
+
+class TracingContext:
+    """
+    Created once per job run. Passed to every phase/coordinator/checker.
+    
+    Usage:
+        trace = TracingContext(job_id="job_20260315_120000")
+        
+        # In PipelineRunner:
+        with trace.span("pipeline_runner.run_job") as span:
+            # In PhaseExecutor:
+            with trace.span("phase6a.image_qa", parent=span) as child:
+                # In ImageChecker:
+                with trace.span("image_checker.verify_scene_5", parent=child) as leaf:
+                    result = check_image(...)
+                    # leaf auto-records duration_ms on exit
+    """
+    
+    def __init__(self, job_id: str):
+        self.job_id = job_id
+        self.trace_id = str(uuid.uuid4())[:12]  # Shared across all events in this run
+        self.event_bus = None  # Set by PipelineRunner
+    
+    def span(self, source: str, parent=None):
+        """Create a tracing span (context manager)."""
+        return Span(
+            trace_id=self.trace_id,
+            job_id=self.job_id,
+            source=source,
+            parent_span_id=parent.span_id if parent else None,
+            event_bus=self.event_bus
+        )
+
+
+class Span:
+    """Individual tracing span — tracks one operation."""
+    
+    def __init__(self, trace_id, job_id, source, parent_span_id, event_bus):
+        self.trace_id = trace_id
+        self.job_id = job_id
+        self.source = source
+        self.span_id = str(uuid.uuid4())[:8]
+        self.parent_span_id = parent_span_id
+        self.event_bus = event_bus
+        self._start_time = None
+    
+    def __enter__(self):
+        self._start_time = time.time()
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        duration_ms = int((time.time() - self._start_time) * 1000)
+        severity = "error" if exc_type else "info"
+        
+        self.event_bus.emit(Event(
+            type=EventType.PHASE_COMPLETED if not exc_type else EventType.PHASE_FAILED,
+            job_id=self.job_id,
+            trace_id=self.trace_id,
+            span_id=self.span_id,
+            parent_span_id=self.parent_span_id,
+            source=self.source,
+            severity=severity,
+            duration_ms=duration_ms,
+            data={"error": str(exc_val)} if exc_type else {}
+        ))
+    
+    def emit(self, event_type: EventType, data: dict = None, severity: str = "info"):
+        """Emit an event within this span's context."""
+        self.event_bus.emit(Event(
+            type=event_type,
+            job_id=self.job_id,
+            trace_id=self.trace_id,
+            span_id=str(uuid.uuid4())[:8],
+            parent_span_id=self.span_id,
+            source=self.source,
+            severity=severity,
+            data=data or {}
+        ))
 ```
 
 ### 4.6 Pipeline Runner (`src/core/pipeline_runner.py`) — Thin Coordinator
