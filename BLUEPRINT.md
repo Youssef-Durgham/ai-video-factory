@@ -2598,6 +2598,43 @@ FLUX images → 6A (image QA) → LTX video → 6B (video QA) → Voice
 
 ---
 
+## Phase 6C: Text Overlay QA ✅ GATE (NEW)
+
+### Purpose
+After FFmpeg composes the video with Arabic text overlays — verify overlays are readable, positioned correctly, and timed properly. This catches problems that ONLY exist after composition.
+
+### Components
+
+#### 6C.1 Two-Layer Overlay Verification
+
+**Layer 1: Deterministic (hard rules):**
+- **OCR verification:** Extract frame at each overlay timestamp → OCR (EasyOCR Arabic) → compare vs expected text → match < 80% = unreadable
+- **Contrast ratio:** Text region vs background → WCAG AA minimum 4.5:1
+- **Safe zone check:** Text not in top 5% (YouTube title bar) or bottom 10% (YouTube controls)
+- **Timing sync:** Overlay appears/disappears within ±0.5s of narration → off by >1.0s = fail
+- **Minimum display:** Each overlay visible for ≥ 2 seconds
+- **RTL check:** Arabic text renders right-to-left correctly, no reversed characters
+
+**Layer 2: Vision LLM (supplementary):**
+- Qwen2.5-VL checks: readability, positioning, visual integration with documentary style, occlusion of key content
+- 4 axes, each with score + reasoning + confidence
+
+**Auto-fix on failure** (up to 2 retries):
+- Low contrast → add semi-transparent dark box behind text
+- Bad position → reposition to safe zone
+- Timing off → adjust FFmpeg overlay timestamps
+- Font too small → increase size
+- RTL broken → switch to Noto Naskh Arabic font
+
+### Gate Logic
+```
+IF all overlays pass (deterministic + vision) → proceed to Final QA
+IF auto-fixable issues → re-compose with fixes → re-check (max 2 retries)
+IF 2 retries failed → BLOCK + alert Yusif
+```
+
+---
+
 ## Phase 7: QA — Final Assembled Video Check ✅ GATE
 
 ### Purpose
@@ -2669,7 +2706,10 @@ Optimize and publish videos to YouTube with maximum discoverability.
   - Use channel-specific templates/style
   - **Uses best-performing title from Phase 2**
 - **Text overlay:** Pillow/PIL for Arabic text rendering
-- **Selection:** LLM scores thumbnails based on click-appeal
+- **Selection:** Full 3-layer QA (same rigor as scene images):
+  - **Layer 1 (Deterministic):** Resolution, file size, face detection, mobile readability simulation (downscale to 168x94 → OCR), color vibrancy, YouTube dead zone check (duration badge area), competitor similarity (CLIP embeddings)
+  - **Layer 2 (Vision Rubric):** Click appeal, topic relevance, mobile readability, emotional impact, professionalism, differentiation (show competitor thumbnails alongside) — 6 axes, each with score + reasoning + confidence
+  - **Layer 3 (Ranking):** Weighted formula ranks all 3 variants. All 3 < 6.0 → regenerate. Stored in `qa_rubrics` table (asset_type='thumbnail')
 - **Learn from data:** After Phase 8.4 tracks performance, feed back which thumbnail styles get highest CTR
 - **A/B Testing (Local AI Agent):**
   1. FLUX generates 3 thumbnail variants with different styles (composition, colors, text placement)
@@ -2822,6 +2862,19 @@ IF no response in 24 hours:
 - Monthly deep analysis on 1st of each month
 
 ### Components
+
+#### 9.0 Vision QA Rubric Calibration (NEW)
+- **Trigger:** Every 20 published videos (enough statistical data)
+- **Process:**
+  1. Pull all `qa_rubrics` scores + `youtube_analytics` performance for published videos
+  2. Calculate Pearson correlation: each rubric axis vs retention/CTR/watch time
+  3. Axes with strong correlation to performance → increase weight
+  4. Axes with no correlation → decrease weight (or remove)
+  5. Analyze threshold: find optimal pass/fail cutoff via ROC curve
+  6. Track regen efficiency: did regenerated assets actually improve final performance?
+- **Output:** Updated weights + thresholds saved to `calibration_history` table + `settings.yaml`
+- **Example discovery:** "composition quality correlates 0.7 with retention → increase weight from 0.15 to 0.22"
+- **Safety:** New weights applied gradually. If calibrated weights produce worse results for 5 videos → revert to previous
 
 #### 9.1 CTR Analyzer
 - **Tracks:** Impressions → Clicks → CTR for every video

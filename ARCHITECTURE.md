@@ -632,6 +632,7 @@ class JobStatus(str, Enum):
     MUSIC         = "music"
     SFX           = "sfx"
     COMPOSE       = "compose"
+    OVERLAY_QA    = "overlay_qa"       # Verify Arabic text overlays are readable/positioned
     
     FINAL_QA      = "final_qa"
     MANUAL_REVIEW = "manual_review"
@@ -668,7 +669,8 @@ TRANSITIONS: dict[JobStatus, list[JobStatus]] = {
     JobStatus.VOICE:         [JobStatus.MUSIC, JobStatus.BLOCKED],
     JobStatus.MUSIC:         [JobStatus.SFX, JobStatus.BLOCKED],
     JobStatus.SFX:           [JobStatus.COMPOSE, JobStatus.BLOCKED],
-    JobStatus.COMPOSE:       [JobStatus.FINAL_QA, JobStatus.BLOCKED],
+    JobStatus.COMPOSE:       [JobStatus.OVERLAY_QA, JobStatus.BLOCKED],
+    JobStatus.OVERLAY_QA:    [JobStatus.FINAL_QA, JobStatus.COMPOSE, JobStatus.BLOCKED],  # fail → re-compose
     
     JobStatus.FINAL_QA:      [JobStatus.MANUAL_REVIEW, JobStatus.PUBLISH, JobStatus.BLOCKED],
     JobStatus.MANUAL_REVIEW: [JobStatus.PUBLISH, JobStatus.BLOCKED, JobStatus.CANCELLED],
@@ -709,7 +711,8 @@ GPU_REQUIREMENTS: dict[JobStatus, Optional[str]] = {
     JobStatus.VOICE:        "fish_speech",
     JobStatus.MUSIC:        "musicgen",
     JobStatus.SFX:          "audiogen",
-    JobStatus.COMPOSE:      None,             # CPU only
+    JobStatus.COMPOSE:      None,             # CPU only (FFmpeg)
+    JobStatus.OVERLAY_QA:   "qwen2.5-vl:72b",   # Verify text overlays
     JobStatus.FINAL_QA:     "qwen2.5-vl:72b",   # Vision for frame analysis + text for compliance
     JobStatus.MANUAL_REVIEW: None,            # Waiting for human
     JobStatus.PUBLISH:      "flux",           # Thumbnails
@@ -2645,9 +2648,104 @@ Vision QA does NOT check: "is this historically accurate?"
 ```
 Images → 6A (image QA) → LTX video gen → 6B (video QA) → Voice gen
 ```
-This means the state machine needs these transitions:
+Updated state machine transitions:
 ```
-IMAGES → IMAGE_QA → VIDEO_GEN → VIDEO_QA → VOICE → ...
+IMAGES → IMAGE_QA → VIDEO_GEN → VIDEO_QA → VOICE → MUSIC → SFX → COMPOSE → OVERLAY_QA → FINAL_QA → ...
+```
+
+#### Phase 6C: Text Overlay QA (`src/phase6_visual_qa/overlay_checker.py`)
+
+> **After FFmpeg composes video with Arabic text overlays — verify they're correct.**
+> This catches: unreadable text, bad positioning, timing mismatches, color clashes.
+
+```
+Input:  Composed video with text overlays (output/[job_id]/composed.mp4)
+Output: Overlay QA results → DB: qa_rubrics (asset_type='overlay')
+LLM:    Qwen2.5-VL 72B
+STATUS: OVERLAY_QA (between COMPOSE and FINAL_QA)
+
+Files to build:
+├── overlay_checker.py
+│   └── check_overlays(video_path, scenes) → OverlayQAResult
+│       
+│       ┌─────────────────────────────────────────────────────────┐
+│       │ LAYER 1: DETERMINISTIC (no LLM)                        │
+│       │                                                         │
+│       │ For each scene with text_overlay:                       │
+│       │ ├── Extract frame at overlay timestamp (FFmpeg)          │
+│       │ ├── OCR the frame (EasyOCR Arabic mode)                 │
+│       │ │   → Compare OCR output vs expected overlay text       │
+│       │ │   → Match rate < 80% = text unreadable                │
+│       │ ├── Text region contrast analysis                       │
+│       │ │   → Extract text bounding box                         │
+│       │ │   → Calculate contrast ratio vs background            │
+│       │ │   → WCAG AA minimum: 4.5:1 (fail below this)         │
+│       │ ├── Text position check                                 │
+│       │ │   → Not in top 5% (YouTube title bar zone)            │
+│       │ │   → Not in bottom 10% (YouTube controls zone)         │
+│       │ │   → Not clipped by edges                              │
+│       │ ├── Timing verification                                 │
+│       │ │   → Overlay appears when narration starts (±0.5s)     │
+│       │ │   → Overlay disappears when narration ends (±0.5s)    │
+│       │ │   → Minimum display time: 2 seconds                   │
+│       │ └── Arabic text direction check                         │
+│       │     → Verify RTL rendering is correct                   │
+│       │     → No reversed characters or mixed direction          │
+│       └─────────────────────────────────────────────────────────┘
+│       
+│       ┌─────────────────────────────────────────────────────────┐
+│       │ LAYER 2: VISION LLM (Qwen2.5-VL — supplementary)      │
+│       │                                                         │
+│       │ Send frame with overlay to Qwen2.5-VL:                  │
+│       │ "This documentary frame has Arabic text overlay.         │
+│       │  Expected text: '{expected_text}'                        │
+│       │                                                         │
+│       │  Check:                                                  │
+│       │  A. Readability (1-10): Is the text clearly readable?   │
+│       │     Consider: font size, contrast, background clutter   │
+│       │  B. Positioning (1-10): Is the text well-placed?        │
+│       │     Not covering important visual elements?             │
+│       │  C. Visual Integration (1-10): Does the text style      │
+│       │     match the documentary aesthetic?                    │
+│       │  D. Occlusion (1-10): Does the text block key content? │
+│       │     Faces, actions, important objects?                  │
+│       │                                                         │
+│       │  Each axis: score + reasoning + confidence"             │
+│       └─────────────────────────────────────────────────────────┘
+│       
+│       ┌─────────────────────────────────────────────────────────┐
+│       │ LAYER 3: COMBINED VERDICT                               │
+│       │                                                         │
+│       │ HARD FAILS (auto re-compose):                           │
+│       │ ├── OCR match < 80% → text unreadable, adjust style     │
+│       │ ├── contrast ratio < 4.5:1 → add/darken background box  │
+│       │ ├── text in YouTube dead zones → reposition              │
+│       │ ├── RTL rendering broken → fix font/renderer             │
+│       │ └── timing off > 1.0s → re-sync                         │
+│       │                                                         │
+│       │ On fail: auto-fix parameters → re-compose → re-check   │
+│       │ Max 2 re-compose attempts before BLOCK                   │
+│       └─────────────────────────────────────────────────────────┘
+│       
+│       Returns: OverlayQAResult(
+│           per_scene: list[OverlayCheck],  # each scene's results
+│           overall_pass: bool,
+│           auto_fixable: bool,             # Can FFmpeg fix it?
+│           fix_instructions: list[dict],   # {scene_index, fix_type, params}
+│       )
+│
+├── overlay_auto_fixer.py
+│   └── apply_fixes(video_path, fix_instructions) → str (new video path)
+│       Automated fixes (re-run FFmpeg with adjusted params):
+│       ├── "contrast" → Add semi-transparent dark box behind text
+│       ├── "position" → Move text to safe zone
+│       ├── "timing" → Adjust overlay start/end timestamps
+│       ├── "font_size" → Increase/decrease font
+│       └── "rtl_fix" → Switch to known-good Arabic font (Noto Naskh)
+│
+└── Stored in qa_rubrics with:
+    asset_type = 'overlay'
+    check_phase = 'phase6c'
 ```
 
 #### Phase 7: Final QA (`src/phase7_video_qa/`)
@@ -2708,13 +2806,189 @@ APIs:   YouTube Data API v3
 
 Files to build:
 ├── thumbnail_gen.py       → FLUX generates 3 variants (GPU Slot 9)
-├── thumbnail_validator.py → Vision LLM checks readability at mobile size
+├── thumbnail_qa.py        → Full 3-layer QA on thumbnails (see below)
 ├── seo_assembler.py       → Combine: title + desc + tags + timestamps + hashtags
 ├── subtitle_gen.py        → SRT from scene narration text + timing
 ├── uploader.py            → YouTube API: upload video, set metadata, add captions
 ├── shorts_gen.py          → Extract 3-5 best moments → crop 9:16 → add subtitles
 └── ab_test.py             → Upload 3 thumbnails to YouTube Test & Compare
 ```
+
+##### Thumbnail QA (`src/phase8_publish/thumbnail_qa.py`)
+
+> Thumbnail = most important single image in the video (drives CTR).
+> Gets the SAME 3-layer treatment as scene images, PLUS thumbnail-specific checks.
+
+```
+Input:  3 generated thumbnail variants
+Output: Ranked thumbnails → best goes to YouTube, all 3 to A/B test
+LLM:    Qwen2.5-VL 72B
+
+┌─────────────────────────────────────────────────────────────┐
+│ LAYER 1: DETERMINISTIC                                      │
+│                                                             │
+│ ├── Resolution check: exactly 1280x720 (YouTube standard)   │
+│ ├── File size: < 2MB (YouTube limit)                        │
+│ ├── Face detection (if applicable): face clearly visible?   │
+│ │   → dlib/RetinaFace: face size > 15% of thumbnail area   │
+│ ├── Text overlay OCR (thumbnail text is intentional!)       │
+│ │   → But must be readable: OCR match > 90%                │
+│ │   → Font size check: text region > 8% of image area      │
+│ ├── Mobile readability simulation                           │
+│ │   → Downscale to 168x94 (YouTube mobile thumbnail size)  │
+│ │   → OCR on downscaled version — text still readable?     │
+│ │   → Key visual elements still distinguishable?            │
+│ ├── Color vibrancy: saturation/contrast above threshold     │
+│ │   → Thumbnails need to POP against white background       │
+│ ├── YouTube dead zone check                                 │
+│ │   → Bottom-right: video duration badge covers this area   │
+│ │   → No critical elements there                            │
+│ └── Competitor similarity check                             │
+│     → CLIP embedding vs recent thumbnails in same niche     │
+│     → Too similar = won't stand out                         │
+└─────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────┐
+│ LAYER 2: VISION RUBRIC (Qwen2.5-VL)                       │
+│                                                             │
+│ A. Click Appeal (1-10)                                      │
+│    "Would you click this thumbnail on YouTube?"             │
+│    Curiosity gap, emotional hook, visual intrigue.          │
+│                                                             │
+│ B. Topic Relevance (1-10)                                   │
+│    "Does this thumbnail match: '{video_title}'?"            │
+│    Misleading thumbnails = high CTR but low retention.      │
+│                                                             │
+│ C. Mobile Readability (1-10)                                │
+│    "At phone screen size, is everything clear?"             │
+│    Text, faces, key objects all distinguishable.            │
+│                                                             │
+│ D. Emotional Impact (1-10)                                  │
+│    "What emotion does this evoke?"                          │
+│    Must match the video's emotional hook.                   │
+│                                                             │
+│ E. Professionalism (1-10)                                   │
+│    "Does this look professionally made?"                    │
+│    Not cluttered, not amateurish, consistent brand.         │
+│                                                             │
+│ F. Differentiation (1-10)                                   │
+│    "Would this stand out among similar videos?"             │
+│    Show 3-5 competitor thumbnails alongside for comparison. │
+└─────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────┐
+│ LAYER 3: RANKING (not just pass/fail)                       │
+│                                                             │
+│ All 3 variants scored → ranked by weighted formula.         │
+│ weighted = click_appeal(0.30) + relevance(0.20) +           │
+│            mobile(0.20) + emotion(0.15) + pro(0.10) +       │
+│            diff(0.05)                                       │
+│                                                             │
+│ Best thumbnail → primary                                    │
+│ All 3 → YouTube Test & Compare (A/B test)                   │
+│ If ALL 3 < 6.0 → regenerate with different prompts          │
+│                                                             │
+│ Stored in qa_rubrics: asset_type='thumbnail'                │
+└─────────────────────────────────────────────────────────────┘
+```
+
+---
+
+##### Vision QA Calibration System (`src/core/rubric_calibrator.py`)
+
+> **Problem:** Rubric weights (semantic_match * 0.25, etc.) are initially arbitrary.
+> **Solution:** After enough Phase 9 data, auto-calibrate weights based on real performance.
+
+```
+The calibration loop:
+┌────────────────────────────────────────────────────────────────┐
+│                                                                │
+│  Phase 6 QA rubric scores ──┐                                  │
+│                              ├──→ Correlation Analysis         │
+│  Phase 9 YouTube metrics ───┘    (after 20+ videos)            │
+│  (CTR, retention, watch time)                                  │
+│                                                                │
+│  Questions we answer:                                          │
+│  ├── Which rubric axes correlate with HIGH retention?           │
+│  │   → Increase their weight                                   │
+│  ├── Which axes don't correlate with anything?                  │
+│  │   → Decrease their weight (or remove)                       │
+│  ├── Is our threshold (7.0) too high or too low?               │
+│  │   → Videos that scored 6.5 but performed well = lower it    │
+│  │   → Videos that scored 8.0 but performed poorly = raise it  │
+│  └── Are regen decisions correct?                               │
+│      → Regenerated images: did regen improve final performance? │
+│      → If not: wasted GPU time, adjust regen threshold          │
+│                                                                │
+│  Output: Updated weights + thresholds in calibration config     │
+│  Frequency: After every 20 new videos (enough statistical data) │
+│  Storage: calibration_history table (track weight evolution)     │
+└────────────────────────────────────────────────────────────────┘
+
+Files to build:
+├── rubric_calibrator.py
+│   └── class RubricCalibrator:
+│       
+│       def calibrate(self, min_videos: int = 20) → CalibrationResult:
+│           """
+│           1. Pull all qa_rubrics + youtube_analytics for published videos
+│           2. For each rubric axis, calculate Pearson correlation with:
+│              - avg_view_percentage (retention)
+│              - ctr (click-through rate) [thumbnails only]
+│              - watch_time_hours (engagement)
+│           3. Normalize correlations → new weights (sum = 1.0)
+│           4. Analyze threshold: find optimal cutoff via ROC curve
+│              (maximize: high-performing videos PASS, low-performing FAIL)
+│           5. Save new weights to config + calibration_history
+│           """
+│           pass
+│       
+│       def should_calibrate(self) → bool:
+│           """True if 20+ new videos since last calibration."""
+│           pass
+│       
+│       def get_current_weights(self) → dict:
+│           """Return active weights (default or calibrated)."""
+│           pass
+│
+├── calibration config in settings.yaml:
+│   rubric_calibration:
+│     mode: "default"              # "default" | "calibrated" | "manual"
+│     min_videos_for_calibration: 20
+│     
+│     # Default weights (used until first calibration)
+│     image_weights:
+│       semantic_match: 0.25
+│       element_presence: 0.20
+│       composition: 0.15
+│       style_fit: 0.10
+│       artifact_severity: 0.15
+│       cultural: 0.05
+│       emotion: 0.10
+│     
+│     # Will be auto-populated after calibration
+│     calibrated_weights: null
+│     calibrated_threshold: null
+│     last_calibration: null
+│     calibration_confidence: null    # How strong the correlations are
+│
+└── DB table:
+    CREATE TABLE IF NOT EXISTS calibration_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        calibration_type TEXT,       -- 'image' | 'video' | 'thumbnail'
+        videos_analyzed INTEGER,
+        old_weights JSON,
+        new_weights JSON,
+        old_threshold REAL,
+        new_threshold REAL,
+        correlations JSON,           -- {axis: pearson_r, ...}
+        confidence REAL,             -- Overall calibration confidence
+        notes TEXT,                   -- "composition weight increased 0.15→0.22"
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+```
+
+---
 
 #### Phase 9: Intelligence (`src/phase9_intelligence/`)
 ```
