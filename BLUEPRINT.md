@@ -201,7 +201,7 @@ Write a complete, reviewed, fact-checked script divided into timed scenes. Uses 
   - SEO keywords from Phase 2 (must naturally include top keywords)
   - Selected title from Phase 2
   - Unique angle from Phase 2
-- **Uses Qwen 2.5 72B (local)** — strongest open-source Arabic model
+- **Uses Qwen 3.5 (local)** — strongest open-source Arabic model
 - Writes full Arabic script in documentary/narration style (reference: channels like الفاتورة المرعبة، وثائقيات سياسية/تاريخية)
 - Style: dramatic hooks, suspenseful pacing, rhetorical questions, cinematic narration
 - Structure:
@@ -248,7 +248,7 @@ Write a complete, reviewed, fact-checked script divided into timed scenes. Uses 
 - **Output:** JSON array of 40-80 scenes
 
 #### 3.5 Visual Identity Decision (AI — single decision drives everything)
-- Qwen 72B reads the complete script and makes ONE unified styling decision:
+- Qwen 3.5 reads the complete script and makes ONE unified styling decision:
   - **Font category** → selects from 8 Arabic font families
   - **Animation style** → entry/exit/persistent animations for text overlays
   - **Color grade** → cinematic LUT for all images + thumbnails
@@ -267,7 +267,7 @@ Write a complete, reviewed, fact-checked script divided into timed scenes. Uses 
 - Output: adjusted scene durations (overrides initial estimates)
 
 ### Tech Stack
-- LLM: Qwen 2.5 72B (local via Ollama) — all script tasks
+- LLM: Qwen 3.5 (local via Ollama) — all script tasks
 - Web search for research
 - Structured JSON output with validation
 
@@ -528,7 +528,7 @@ Generate all media assets — images, video clips, voice, music, SFX — and com
 - **Output:** MP4 clips per scene (5-10 sec each)
 
 #### 5.3 Voice Engine — Pre-Built Voice Library + Smart Selection 🎙️
-- **Model:** Fish Speech / OpenAudio S1 (local)
+- **Model:** Fish Audio S2 Pro / OpenAudio S1 (local)
 - **VRAM:** ~4GB
 
 ##### 5.3.1 Voice Cloning from Real Recordings
@@ -555,7 +555,7 @@ Generate all media assets — images, video clips, voice, music, SFX — and com
   ```
   الترتيب حسب جودة العربية:
   
-  🥇 1. Fish Speech 1.5 (محلي — مجاني)
+  🥇 1. Fish Audio S2 Pro (محلي — مجاني)
      ├── أقوى نموذج مفتوح للعربية حالياً
      ├── يدعم zero-shot cloning (عينة واحدة تكفي)
      ├── VRAM: ~4GB
@@ -563,7 +563,7 @@ Generate all media assets — images, video clips, voice, music, SFX — and com
      └── يدعم emotion control (Feature 30)
   
   🥈 2. OpenAudio S1 (محلي — مجاني)
-     ├── من Sesame/Fish Speech team
+     ├── من Sesame/Fish Audio S2 Pro team
      ├── أحدث، جودة صوتية أعلى
      ├── VRAM: ~4GB
      ├── جودة العربية: 8/10 (أحدث بس أقل اختبار)
@@ -574,7 +574,7 @@ Generate all media assets — images, video clips, voice, music, SFX — and com
      ├── يدعم العربية رسمياً
      ├── VRAM: ~2GB
      ├── جودة العربية: 7.5/10
-     └── أبطأ من Fish Speech
+     └── أبطأ من Fish Audio S2 Pro
   
   ☁️ 4. ElevenLabs (API — مدفوع $22/شهر)
      ├── أفضل جودة cloning بالعالم
@@ -595,7 +595,7 @@ Generate all media assets — images, video clips, voice, music, SFX — and com
       normalized = normalize_volume(cleaned)        # consistent volume
       
       # 2. استنساخ الصوت
-      model = load_fish_speech()
+      model = load_fish_audio_s2_pro()
       voice_embedding = model.create_speaker_embedding(normalized)
       
       # 3. اختبار الجودة — يولّد جملة اختبارية ويقيّمها
@@ -614,7 +614,7 @@ Generate all media assets — images, video clips, voice, music, SFX — and com
           "quality_score": quality_score,
           "similarity_score": similarity_score,
           "cloned_at": datetime.now(),
-          "model": "fish_speech_1.5"
+          "model": "fish_audio_s2_pro"
       })
       
       return voice_embedding
@@ -630,7 +630,7 @@ Generate all media assets — images, video clips, voice, music, SFX — and com
       source: "real_human_recording"              # تسجيل شخص حقيقي
       reference_file: "config/voices/male_authoritative_01.wav"  # الأصل
       clone_embedding: "config/voices/embeddings/v_male_auth_01.pt"  # الـ clone
-      clone_model: "fish_speech_1.5"
+      clone_model: "fish_audio_s2_pro"
       reference_duration_sec: 120                 # دقيقتين تسجيل أصلي
       clone_quality_score: 8.9
       clone_similarity_score: 0.92
@@ -649,7 +649,7 @@ Generate all media assets — images, video clips, voice, music, SFX — and com
       source: "real_human_recording"
       reference_file: "config/voices/male_energetic_01.wav"
       clone_embedding: "config/voices/embeddings/v_male_energy_01.pt"
-      clone_model: "fish_speech_1.5"
+      clone_model: "fish_audio_s2_pro"
       reference_duration_sec: 90
       clone_quality_score: 8.5
       clone_similarity_score: 0.88
@@ -668,7 +668,7 @@ Generate all media assets — images, video clips, voice, music, SFX — and com
       source: "real_human_recording"
       reference_file: "config/voices/male_mysterious_01.wav"
       clone_embedding: "config/voices/embeddings/v_male_mystery_01.pt"
-      clone_model: "fish_speech_1.5"
+      clone_model: "fish_audio_s2_pro"
       reference_duration_sec: 60
       clone_quality_score: 8.3
       clone_similarity_score: 0.85
@@ -687,7 +687,7 @@ Generate all media assets — images, video clips, voice, music, SFX — and com
       source: "real_human_recording"
       reference_file: "config/voices/male_narrator_01.wav"
       clone_embedding: "config/voices/embeddings/v_male_narr_01.pt"
-      clone_model: "fish_speech_1.5"
+      clone_model: "fish_audio_s2_pro"
       reference_duration_sec: 180
       clone_quality_score: 9.1
       clone_similarity_score: 0.93
@@ -706,7 +706,7 @@ Generate all media assets — images, video clips, voice, music, SFX — and com
       source: "real_human_recording"
       reference_file: "config/voices/female_educational_01.wav"
       clone_embedding: "config/voices/embeddings/v_female_edu_01.pt"
-      clone_model: "fish_speech_1.5"
+      clone_model: "fish_audio_s2_pro"
       reference_duration_sec: 90
       clone_quality_score: 8.6
       clone_similarity_score: 0.87
@@ -725,7 +725,7 @@ Generate all media assets — images, video clips, voice, music, SFX — and com
       source: "real_human_recording"
       reference_file: "config/voices/female_dramatic_01.wav"
       clone_embedding: "config/voices/embeddings/v_female_drama_01.pt"
-      clone_model: "fish_speech_1.5"
+      clone_model: "fish_audio_s2_pro"
       reference_duration_sec: 120
       clone_quality_score: 8.4
       clone_similarity_score: 0.86
@@ -744,7 +744,7 @@ Generate all media assets — images, video clips, voice, music, SFX — and com
       source: "real_human_recording"
       reference_file: "config/voices/young_male_01.wav"
       clone_embedding: "config/voices/embeddings/v_young_male_01.pt"
-      clone_model: "fish_speech_1.5"
+      clone_model: "fish_audio_s2_pro"
       reference_duration_sec: 60
       clone_quality_score: 8.1
       clone_similarity_score: 0.84
@@ -848,16 +848,16 @@ Generate all media assets — images, video clips, voice, music, SFX — and com
   ```
 - **Fallback chain:**
   ```
-  Primary:   Fish Speech + selected library voice
-  Fallback1: Fish Speech + different library voice
+  Primary:   Fish Audio S2 Pro + selected library voice
+  Fallback1: Fish Audio S2 Pro + different library voice
   Fallback2: OpenAudio S1 + selected library voice
   Fallback3: ElevenLabs API (paid, last resort)
   ```
 - **Time:** ~5-10 sec/clip on RTX 3090
 - **Output:** WAV audio per scene
 
-#### 5.4 Music Generator (MusicGen / AudioCraft)
-- **Model:** MusicGen-large (Meta) — local
+#### 5.4 Music Generator (ACE-Step 1.5 / AudioCraft)
+- **Model:** ACE-Step 1.5 (Meta) — local
 - **VRAM:** ~4GB
 - **Strategy:**
   - Generate 3-4 music tracks per video:
@@ -881,7 +881,7 @@ Generate all media assets — images, video clips, voice, music, SFX — and com
   **Layer 1: Generation Safeguards (قبل التوليد)**
   - Negative prompts إجبارية:
     ```
-    ALWAYS INCLUDE in MusicGen prompt:
+    ALWAYS INCLUDE in ACE-Step 1.5 prompt:
     "original composition, no covers, no samples, no existing melodies,
      no copyrighted material, unique musical arrangement"
     
@@ -891,7 +891,7 @@ Generate all media assets — images, video clips, voice, music, SFX — and com
     - "style of [artist]" أو "like [song]"
     - أي مرجع لموسيقى محمية بحقوق نشر
     ```
-  - MusicGen temperature: 0.8-1.0 (أعلى = أكثر originality, أقل تشابه)
+  - ACE-Step 1.5 temperature: 0.8-1.0 (أعلى = أكثر originality, أقل تشابه)
   - Seed عشوائي لكل generation (لا يتكرر pattern)
 
   **Layer 2: Audio Fingerprint Check (بعد التوليد — قبل الاستخدام)**
@@ -992,8 +992,8 @@ Generate all media assets — images, video clips, voice, music, SFX — and com
   4. تقدير: ~2GB database, ~1 hour setup
 
 #### 5.5 SFX Generator (AudioCraft)
-- **Model:** AudioGen (part of AudioCraft) — local
-- **VRAM:** ~4GB (shared with MusicGen)
+- **Model:** MOSS-SoundEffect (part of AudioCraft) — local
+- **VRAM:** ~4GB (shared with ACE-Step 1.5)
 - **Per scene:** Generate sound effects from `sfx` tags
   - Example: `"crowd cheering"` → generates crowd audio
   - Example: `"explosion in distance"` → generates explosion SFX
@@ -1014,7 +1014,7 @@ Generate all media assets — images, video clips, voice, music, SFX — and com
      - **NOT** FFmpeg drawtext (too limited for Arabic animations)
      - Method: PyCairo (proper Arabic shaping via HarfBuzz/Pango) → frame-by-frame PNGs → ProRes 4444 overlay → FFmpeg composite
      
-     **AI Font Selection (Qwen 72B — during Phase 3):**
+     **AI Font Selection (Qwen 3.5 — during Phase 3):**
      - Reads script tone, topic, emotional arc → selects from 8 font categories:
        - Formal/News: IBM Plex Sans Arabic (clean, authoritative)
        - Dramatic: Aref Ruqaa (bold, high-contrast, shadows)
@@ -1039,7 +1039,7 @@ Generate all media assets — images, video clips, voice, music, SFX — and com
      
      **Special animations:**
      - Typewriter: Arabic-aware, reveals full ligature groups (لا as unit)
-     - Word-by-word: syncs with Fish Speech word-level timestamps (karaoke-style)
+     - Word-by-word: syncs with Fish Audio S2 Pro word-level timestamps (karaoke-style)
      - Glitch: RGB channel shift + scanlines → digital feel
      
      **Content types:**
@@ -1074,7 +1074,7 @@ Generate all media assets — images, video clips, voice, music, SFX — and com
 
 #### 5.8 Intelligent Transitions (AI-selected)
 - **Problem:** All crossfades = monotonous, doesn't convey meaning
-- **Solution:** Qwen 72B analyzes each scene pair → selects meaningful transition
+- **Solution:** Qwen 3.5 analyzes each scene pair → selects meaningful transition
 - **Transition library:**
   | Transition | When to Use |
   |-----------|------------|
@@ -1089,14 +1089,14 @@ Generate all media assets — images, video clips, voice, music, SFX — and com
 - **Fallback rules** if LLM fails: mood change → dissolve, tension → cut, time skip → fade black
 
 #### 5.9 Music-Scene Sync (Dynamic Soundtrack)
-- **Problem:** ONE MusicGen track for entire video = mood disconnect
+- **Problem:** ONE ACE-Step 1.5 track for entire video = mood disconnect
 - **Solution:** Group scenes into "mood zones" → generate one music track per zone
 - **Process:**
   1. Phase 3 groups consecutive same-mood scenes into zones:
      - Scenes 1-3 (tense) → Zone A: "tense, 45s"
      - Scenes 4-6 (hopeful) → Zone B: "hopeful, 30s"
      - Scenes 7-9 (climax) → Zone C: "dramatic climax, 50s"
-  2. MusicGen generates one track per zone with zone-specific prompt
+  2. ACE-Step 1.5 generates one track per zone with zone-specific prompt
   3. VideoComposer crossfades between zone tracks (2-3s overlap)
   4. Music ducking still applies during all narration
 - **Mood compatibility groups** (can share track): {tense,dramatic}, {hopeful,inspiring}, {calm,reflective}
@@ -1173,8 +1173,8 @@ Generate all media assets — images, video clips, voice, music, SFX — and com
   |---------|------------|---------|---------|------------|
   | Ollama (Qwen) | 3 | 10s → 20s → 40s | 5 min | Block job |
   | ComfyUI (FLUX/LTX) | 3 | 5s → 10s → 20s | 3 min | Block job |
-  | Fish Speech | 2 | 5s → 10s | 2 min | Block job |
-  | MusicGen | 2 | 5s → 10s | 3 min | Use stock music |
+  | Fish Audio S2 Pro | 2 | 5s → 10s | 2 min | Block job |
+  | ACE-Step 1.5 | 2 | 5s → 10s | 3 min | Use stock music |
   | FFmpeg | 2 | 2s → 3s | 10 min | Block job |
   | YouTube API | 5 | 60s → 2m → 4m → 8m → 15m | 2 min | Schedule after quota reset |
   | Whisper (QA) | 2 | 5s → 10s | 2 min | Skip (note in rubric) |
@@ -1258,7 +1258,7 @@ Generate all media assets — images, video clips, voice, music, SFX — and com
 #### Deployment & First Run
 - **Full setup guide in SETUP.md** — step-by-step for AI builder or human:
   1. System setup (CUDA, Python 3.11, FFmpeg)
-  2. Model downloads (~80GB): Qwen 72B, Qwen2.5-VL, FLUX, LTX-2.3, Fish Speech, MusicGen, Whisper
+  2. Model downloads (~80GB): Qwen 3.5, Qwen 3.5-VL, FLUX, LTX-2.3, Fish Audio S2 Pro, ACE-Step 1.5, Whisper
   3. ComfyUI setup + workflows
   4. Arabic font installation (11 families from Google Fonts)
   5. Configuration (settings.yaml, channels.yaml, YouTube OAuth)
@@ -1288,13 +1288,13 @@ Generate all media assets — images, video clips, voice, music, SFX — and com
 **Problem:** Single RTX 3090 (24GB VRAM). Models cannot coexist in memory:
 | Model | VRAM Usage | RAM Offload |
 |-------|-----------|-------------|
-| Qwen 72B Q4 | ~12-16GB | + ~26GB system RAM |
+| Qwen 3.5 Q4 | ~12-16GB | + ~26GB system RAM |
 | FLUX.1-dev | ~12GB | — |
 | LTX-2.3 | ~12GB | — |
 | Llama 3.2 Vision | ~7GB | — |
-| Fish Speech | ~4GB | — |
-| MusicGen | ~4GB | — |
-| AudioGen | ~4GB | — |
+| Fish Audio S2 Pro | ~4GB | — |
+| ACE-Step 1.5 | ~4GB | — |
+| MOSS-SoundEffect | ~4GB | — |
 | SadTalker | ~4GB | — |
 | Real-ESRGAN | CPU only | ~2GB RAM |
 
@@ -1545,14 +1545,14 @@ class GPULogger:
 
 #### Log Output Example (real production run)
 ```
-14:00:01.234 | INFO    | 🔄 LOAD START | model=qwen2.5:72b | type=llm | expected_vram=16GB | available_vram=23.5GB | temp=42°C
-14:00:46.891 | INFO    | ✅ SUCCESS LOAD | model=qwen2.5:72b | took=45.66s | vram_used=15.8GB (65.8%) | temp=48°C
-14:00:47.001 | INFO    | ⚡ GEN START | model=qwen2.5:72b | task=script_writing | batch=1 | vram=15.8GB | temp=48°C
-14:15:22.445 | INFO    | ✅ GEN END | model=qwen2.5:72b | task=script_writing | produced=1 | took=875.44s | rate=0.1/min | vram=15.9GB | temp=61°C
-14:15:22.500 | INFO    | ⚡ GEN START | model=qwen2.5:72b | task=scene_splitting | batch=1 | vram=15.9GB | temp=61°C
-14:17:55.100 | INFO    | ✅ GEN END | model=qwen2.5:72b | task=scene_splitting | produced=62 | took=152.6s | rate=24.4/min | vram=15.9GB | temp=63°C
-14:17:55.200 | INFO    | 🗑️ UNLOAD START | model=qwen2.5:72b | vram_before=15.9GB (66.3%)
-14:17:58.500 | INFO    | ✅ UNLOAD COMPLETE | model=qwen2.5:72b | took=3.3s | vram_after=0.4GB (1.7%)
+14:00:01.234 | INFO    | 🔄 LOAD START | model=qwen3.5:latest | type=llm | expected_vram=16GB | available_vram=23.5GB | temp=42°C
+14:00:46.891 | INFO    | ✅ SUCCESS LOAD | model=qwen3.5:latest | took=45.66s | vram_used=15.8GB (65.8%) | temp=48°C
+14:00:47.001 | INFO    | ⚡ GEN START | model=qwen3.5:latest | task=script_writing | batch=1 | vram=15.8GB | temp=48°C
+14:15:22.445 | INFO    | ✅ GEN END | model=qwen3.5:latest | task=script_writing | produced=1 | took=875.44s | rate=0.1/min | vram=15.9GB | temp=61°C
+14:15:22.500 | INFO    | ⚡ GEN START | model=qwen3.5:latest | task=scene_splitting | batch=1 | vram=15.9GB | temp=61°C
+14:17:55.100 | INFO    | ✅ GEN END | model=qwen3.5:latest | task=scene_splitting | produced=62 | took=152.6s | rate=24.4/min | vram=15.9GB | temp=63°C
+14:17:55.200 | INFO    | 🗑️ UNLOAD START | model=qwen3.5:latest | vram_before=15.9GB (66.3%)
+14:17:58.500 | INFO    | ✅ UNLOAD COMPLETE | model=qwen3.5:latest | took=3.3s | vram_after=0.4GB (1.7%)
 14:17:58.600 | INFO    | 🔄 LOAD START | model=FLUX.1-dev | type=comfyui | expected_vram=12GB | available_vram=23.2GB | temp=52°C
 14:18:13.200 | INFO    | ✅ SUCCESS LOAD | model=FLUX.1-dev | took=14.6s | vram_used=12.1GB (50.4%) | temp=54°C
 14:18:13.300 | INFO    | ⚡ GEN START | model=FLUX.1-dev | task=scene_images | batch=62 | vram=12.1GB | temp=54°C
@@ -1688,14 +1688,14 @@ class GPUMemoryManager:
 #### Model Loading Strategy
 ```
 Strategy 1: Ollama for LLMs (Qwen, Llama Vision)
-  → ollama run qwen2.5:72b → processes tasks → ollama stop qwen2.5:72b
+  → ollama run qwen3.5:latest → processes tasks → ollama stop qwen3.5:latest
   → VRAM freed → next model loads
 
 Strategy 2: ComfyUI for Image/Video (FLUX, LTX-2.3)
   → ComfyUI API: load workflow → generate → unload model → free memory
   → ComfyUI supports model unloading via API
 
-Strategy 3: Direct Python for Audio (Fish Speech, MusicGen, AudioGen)
+Strategy 3: Direct Python for Audio (Fish Audio S2 Pro, ACE-Step 1.5, MOSS-SoundEffect)
   → Load model → process all scenes → del model → torch.cuda.empty_cache()
 
 Strategy 4: CPU-only (Real-ESRGAN, FFmpeg)
@@ -1713,11 +1713,11 @@ Strategy 4: CPU-only (Real-ESRGAN, FFmpeg)
    Vision LLM:  load once → check ALL 60 images → unload        (~5 min)
    FLUX:        load again → regenerate failed images → unload   (~5 min, if needed)
    LTX-2.3:    load once → generate ALL 60 videos → unload      (~90 min)
-   Fish Speech: load once → narrate ALL 60 scenes → unload      (~10 min)
-   MusicGen:    load once → generate ALL tracks → unload         (~10 min)
-   AudioGen:    load once → generate ALL SFX → unload            (~5 min)
+   Fish Audio S2 Pro: load once → narrate ALL 60 scenes → unload      (~10 min)
+   ACE-Step 1.5:    load once → generate ALL tracks → unload         (~10 min)
+   MOSS-SoundEffect:    load once → generate ALL SFX → unload            (~5 min)
    FFmpeg:      CPU only → compose final video                   (~10 min)
-   Qwen 72B:    load once → all QA checks → unload              (~10 min)
+   Qwen 3.5:    load once → all QA checks → unload              (~10 min)
 ```
 
 #### VRAM Monitoring & Safety
@@ -1777,11 +1777,11 @@ def generate_and_free(workflow, images_needed):
 | Swap | Time | Notes |
 |------|------|-------|
 | Unload any model | ~2-5 sec | del + cache clear + gc |
-| Load Qwen 72B Q4 | ~30-45 sec | 42GB from disk → GPU+RAM |
+| Load Qwen 3.5 Q4 | ~30-45 sec | 42GB from disk → GPU+RAM |
 | Load FLUX | ~10-15 sec | 12GB from disk → VRAM |
 | Load LTX-2.3 | ~10-15 sec | 8GB from disk → VRAM |
-| Load Fish Speech | ~5 sec | 2GB → VRAM |
-| Load MusicGen | ~5 sec | 3.3GB → VRAM |
+| Load Fish Audio S2 Pro | ~5 sec | 2GB → VRAM |
+| Load ACE-Step 1.5 | ~5 sec | 3.3GB → VRAM |
 | **Total swap overhead** | **~3-5 min** | **7 swaps per video** |
 
 #### Error Recovery
@@ -1805,8 +1805,8 @@ IF model fails to load:
 ```
 Single RTX 3090 — one model at a time, full VRAM flush between each:
 
-Phase 1-4: SCRIPT & QA (Qwen 72B)
-  🧠 Load Qwen 72B ──────────────────────── (~45 sec)
+Phase 1-4: SCRIPT & QA (Qwen 3.5)
+  🧠 Load Qwen 3.5 ──────────────────────── (~45 sec)
   ├── Phase 1: Research analysis            (~5 min)
   ├── Phase 2: SEO + titles + tags          (~5 min)
   ├── Phase 3: Script + review + split      (~15 min)
@@ -1831,27 +1831,27 @@ Phase 5b: VIDEO (LTX-2.3)
   └── Generate ALL video clips (60×)        (~90 min)
   🗑️ Unload LTX ───────────────────────────── (~3 sec)
 
-Phase 5c: VOICE (Fish Speech)
-  🎙️ Load Fish Speech ─────────────────────── (~5 sec)
+Phase 5c: VOICE (Fish Audio S2 Pro)
+  🎙️ Load Fish Audio S2 Pro ─────────────────────── (~5 sec)
   └── Narrate ALL scenes (60×)              (~10 min)
-  🗑️ Unload Fish Speech ───────────────────── (~3 sec)
+  🗑️ Unload Fish Audio S2 Pro ───────────────────── (~3 sec)
 
-Phase 5d: MUSIC (MusicGen)
-  🎵 Load MusicGen ─────────────────────────── (~5 sec)
+Phase 5d: MUSIC (ACE-Step 1.5)
+  🎵 Load ACE-Step 1.5 ─────────────────────────── (~5 sec)
   └── Generate 3-4 music tracks             (~10 min)
-  🗑️ Unload MusicGen ──────────────────────── (~3 sec)
+  🗑️ Unload ACE-Step 1.5 ──────────────────────── (~3 sec)
 
-Phase 5e: SFX (AudioGen)
-  🔊 Load AudioGen ─────────────────────────── (~5 sec)
+Phase 5e: SFX (MOSS-SoundEffect)
+  🔊 Load MOSS-SoundEffect ─────────────────────────── (~5 sec)
   └── Generate ALL SFX                      (~5 min)
-  🗑️ Unload AudioGen ──────────────────────── (~3 sec)
+  🗑️ Unload MOSS-SoundEffect ──────────────────────── (~3 sec)
 
 Phase 5f: COMPOSE (CPU — no GPU needed)
   🎬 FFmpeg + Pillow ───────────────────────── (CPU)
   └── Assemble final video                  (~10 min)
 
-Phase 7: FINAL QA (Qwen 72B)
-  🧠 Load Qwen 72B ──────────────────────────  (~45 sec)
+Phase 7: FINAL QA (Qwen 3.5)
+  🧠 Load Qwen 3.5 ──────────────────────────  (~45 sec)
   └── Technical + content + compliance check (~10 min)
   🗑️ Unload Qwen ──────────────────────────── (~3 sec)
 
@@ -2143,7 +2143,7 @@ CREATE TABLE qa_rubrics (
     flags JSON,                          -- ["low_confidence_composition", "near_threshold", ...]
     
     -- Metadata
-    model_used TEXT,                     -- 'qwen2.5-vl:72b'
+    model_used TEXT,                     -- 'Qwen 3.5-VL:72b'
     inference_time_ms INTEGER,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -2748,7 +2748,7 @@ def cleanup_database():
 
 ## Phase 6: QA — Deep Visual Verification ✅ GATE (TWO STAGES)
 
-> **Vision Model: Qwen2.5-VL 72B** — strongest open-source vision model.
+> **Vision Model: Qwen 3.5-VL** — strongest open-source vision model.
 > Runs locally via Ollama. Far more accurate than Llama Vision 11B.
 > 
 > **Phase 6 runs TWICE** — once for images, once for video clips.
@@ -2789,7 +2789,7 @@ Better to miss a subtle issue than give false confidence.
 - Black/white/corrupt frame detection
 - File integrity check
 
-**Layer 2: Vision LLM Rubric (Qwen2.5-VL — 7 axes):**
+**Layer 2: Vision LLM Rubric (Qwen 3.5-VL — 7 axes):**
 - **A. Semantic Match** (1-10): Does image convey the MEANING of the narration?
 - **B. Visual Element Presence**: Which expected elements are present/absent/uncertain?
 - **C. Composition Quality** (1-10): Well-composed for documentary?
@@ -2806,7 +2806,7 @@ Better to miss a subtle issue than give false confidence.
 
 #### 6A.2 Style Consistency Check (Two-Layer)
 - **Deterministic:** Color histogram comparison (OpenCV), brightness/contrast distribution, pairwise distance → outlier = >2 std deviations
-- **Vision LLM:** All images sent to Qwen2.5-VL — note art style, color temperature, lighting per image, flag breaks
+- **Vision LLM:** All images sent to Qwen 3.5-VL — note art style, color temperature, lighting per image, flag breaks
 - **Combined:** Both layers agree = high confidence flag; deterministic only = medium; LLM only = note (don't fail)
 
 #### 6A.3 Sequence Flow Check (Conservative)
@@ -2846,7 +2846,7 @@ IF <70% pass → BLOCK + alert Yusif
 - Black/white/corrupt frame detection
 - Duration check vs expected, FPS consistency
 
-**Layer 2: Vision LLM Rubric (Qwen2.5-VL — 5 axes on keyframes):**
+**Layer 2: Vision LLM Rubric (Qwen 3.5-VL — 5 axes on keyframes):**
 - **A. Motion Plausibility** (1-10): Do keyframes show believable motion?
 - **B. Script Motion Match** (1-10): Does movement match the motion prompt?
 - **C. Temporal Coherence** (1-10): Logical time progression? No teleporting objects?
@@ -2901,7 +2901,7 @@ After FFmpeg composes the video with Arabic text overlays — verify overlays ar
 - **RTL check:** Arabic text renders right-to-left correctly, no reversed characters
 
 **Layer 2: Vision LLM (supplementary):**
-- Qwen2.5-VL checks: readability, positioning, visual integration with documentary style, occlusion of key content
+- Qwen 3.5-VL checks: readability, positioning, visual integration with documentary style, occlusion of key content
 - 4 axes, each with score + reasoning + confidence
 
 **Auto-fix on failure** (up to 2 retries):
@@ -2925,7 +2925,7 @@ IF 2 retries failed → BLOCK + alert Yusif
 ### Purpose
 After FFmpeg composes the **FULL** final video (all clips + voice + music + SFX + text overlays) — verify the assembled product is correct.
 
-> **Vision Model: Qwen2.5-VL 72B** — same model as Phase 6, used here on the FINAL assembled video.
+> **Vision Model: Qwen 3.5-VL** — same model as Phase 6, used here on the FINAL assembled video.
 
 ### Components
 
@@ -2944,9 +2944,9 @@ After FFmpeg composes the **FULL** final video (all clips + voice + music + SFX 
 - **File Integrity:**
   - MP4 valid and playable, no corruption
 
-#### 7.2 Content Coherence — Vision Check (Qwen2.5-VL 72B)
+#### 7.2 Content Coherence — Vision Check (Qwen 3.5-VL)
 - **Extract 1 keyframe per scene** from the FINAL assembled video
-- **Qwen2.5-VL analyzes** keyframes + narration transcript together:
+- **Qwen 3.5-VL analyzes** keyframes + narration transcript together:
   - Does each frame match its narration?
   - Are **Arabic text overlays** readable, correctly positioned, properly timed?
   - Is the intro/outro present and branded correctly?
@@ -2954,7 +2954,7 @@ After FFmpeg composes the **FULL** final video (all clips + voice + music + SFX 
   - Any visual artifacts introduced during FFmpeg composition?
 - Score: 1-10 content coherence
 
-#### 7.3 Final Compliance Re-check (Qwen 72B text)
+#### 7.3 Final Compliance Re-check (Qwen 3.5 text)
 - YouTube policy sweep on full transcript + metadata
 - Any accidental inappropriate content in assembled video?
 - Content ID final check on mixed audio track
@@ -3002,7 +3002,7 @@ Optimize and publish videos to YouTube with maximum discoverability.
 - **Learn from data:** After Phase 8.4 tracks performance, feed back which thumbnail styles get highest CTR
 - **A/B Testing (Local AI Agent):**
   1. FLUX generates 3 thumbnail variants with different styles (composition, colors, text placement)
-  2. Local Qwen 2.5 72B scores & selects the 3 most different variants
+  2. Local Qwen 3.5 scores & selects the 3 most different variants
   3. Upload all 3 to YouTube "Test & Compare" feature via API
   4. After 7 days: agent pulls CTR analytics per thumbnail
   5. Feeds winning style patterns back into future thumbnail generation prompts
@@ -3024,9 +3024,9 @@ Optimize and publish videos to YouTube with maximum discoverability.
 - **Font matching:** Same primary_font and colors from AI font selection (Phase 3)
   - Font, size (52px at 1080p), outline (2px black), shadow (1px)
   - Accent styling: key words/names in accent_color, quotes in italic, numbers bold
-- Sync timestamps from voice audio timing (word-level from Fish Speech)
+- Sync timestamps from voice audio timing (word-level from Fish Audio S2 Pro)
 - Arabic subtitles (MSA) — clean, accurate, already written
-- Optional: English translated subtitles (via local Qwen 2.5 72B translation)
+- Optional: English translated subtitles (via local Qwen 3.5 translation)
 - **All processing local** — no API calls needed
 - Upload as closed captions to YouTube — **massive SEO boost** (YouTube Arabic auto-captions are poor)
 - Fallback: if .ass upload fails → generate plain .srt
@@ -3475,13 +3475,13 @@ channels:
 | Component | Technology |
 |-----------|-----------|
 | **Orchestrator** | Python 3.11+ (main pipeline controller) |
-| **LLM (Script + QA)** | Qwen 2.5 72B (Q4, local via Ollama) — strong Arabic, used for ALL tasks: script writing, review, SEO, compliance, splitting |
+| **LLM (Script + QA)** | Qwen 3.5 (Q4, local via Ollama) — strong Arabic, used for ALL tasks: script writing, review, SEO, compliance, splitting |
 | **Vision LLM (Phase 6)** | LLaVA / Llama 3.2 Vision (local) or API |
 | **Image Gen** | ComfyUI + FLUX.1-dev |
 | **Video Gen** | ComfyUI + LTX-2.3 |
-| **Voice Cloning + TTS** | Fish Speech 1.5 (best Arabic), fallback: OpenAudio S1 / XTTS v2 / ElevenLabs API |
-| **Music** | MusicGen (via audiocraft library) |
-| **SFX** | AudioGen (via audiocraft library) |
+| **Voice Cloning + TTS** | Fish Audio S2 Pro (best Arabic), fallback: OpenAudio S1 / XTTS v2 / ElevenLabs API |
+| **Music** | ACE-Step 1.5 (via audiocraft library) |
+| **SFX** | MOSS-SoundEffect (via audiocraft library) |
 | **Video Compose** | FFmpeg + MoviePy |
 | **Text on Video** | Pillow (PIL) for Arabic text |
 | **YouTube** | YouTube Data API v3 (google-api-python-client) |
@@ -3494,13 +3494,13 @@ channels:
 ### AI Models to Download
 | Model | Size | Purpose |
 |-------|------|---------|
-| Qwen 2.5 72B Q4_K_M | ~42GB | ALL LLM tasks: script writing, review, SEO, compliance, splitting (strongest local Arabic model) |
+| Qwen 3.5 Q4_K_M | ~42GB | ALL LLM tasks: script writing, review, SEO, compliance, splitting (strongest local Arabic model) |
 | Llama 3.2 Vision 11B | ~7GB | Visual QA (Phase 6) |
 | FLUX.1-dev | ~12GB | Image generation |
 | LTX-2.3 | ~8GB | Video generation (image-to-video with realistic motion) |
-| Fish Speech 1.5 | ~2GB | Arabic voice cloning + TTS (best open-source Arabic clone quality) |
-| MusicGen-large | ~3.3GB | Music generation |
-| AudioGen-medium | ~1.5GB | SFX generation |
+| Fish Audio S2 Pro | ~2GB | Arabic voice cloning + TTS (best open-source Arabic clone quality) |
+| ACE-Step 1.5 | ~3.3GB | Music generation |
+| MOSS-SoundEffect | ~1.5GB | SFX generation |
 | Real-ESRGAN | ~0.1GB | 4K image/video upscaling (CPU) |
 | SadTalker / MuseTalk | ~2GB | AI virtual presenter (lip sync) |
 
@@ -3564,9 +3564,9 @@ ai-video-factory/
 │   ├── phase5_production/
 │   │   ├── image_gen.py        # FLUX image generation
 │   │   ├── video_gen.py        # LTX-2 video generation
-│   │   ├── voice_gen.py        # Fish Speech TTS
-│   │   ├── music_gen.py        # MusicGen background music
-│   │   ├── sfx_gen.py          # AudioGen sound effects
+│   │   ├── voice_gen.py        # Fish Audio S2 Pro TTS
+│   │   ├── music_gen.py        # ACE-Step 1.5 background music
+│   │   ├── sfx_gen.py          # MOSS-SoundEffect sound effects
 │   │   └── composer.py         # FFmpeg video assembly
 │   ├── phase6_visual_qa/
 │   │   ├── image_checker.py    # Vision LLM checks images vs script
@@ -3698,9 +3698,9 @@ ai-video-factory/
 
 07:40  ═══ PHASE 5: PRODUCTION (Part 2 — Video + Audio) ═══
        LTX-2.3 video clips from approved images (~90 min)
-       Fish Speech narration (~10 min)
-       MusicGen background music (~10 min)
-       AudioGen SFX (~5 min)
+       Fish Audio S2 Pro narration (~10 min)
+       ACE-Step 1.5 background music (~10 min)
+       MOSS-SoundEffect SFX (~5 min)
        FFmpeg compose final video (~10 min)
 
 09:45  ═══ PHASE 7: FINAL VIDEO QA ═══
@@ -3753,7 +3753,7 @@ ai-video-factory/
 | Metric | Target | How |
 |--------|--------|-----|
 | Video resolution | 1080p minimum | FLUX + LTX-2.3 output settings |
-| Audio quality | Studio-grade narration | Fish Speech + audio normalization |
+| Audio quality | Studio-grade narration | Fish Audio S2 Pro + audio normalization |
 | Script accuracy | 95%+ factual | Multi-source research + fact-checker |
 | Watch retention | >50% average | Strong hooks + pacing + scene variety |
 | YouTube CTR | >5% | SEO-optimized titles + A/B thumbnails |
@@ -3769,8 +3769,8 @@ ai-video-factory/
 ### Sprint 1: Foundation (Week 1-2)
 - [ ] Set up Python project structure
 - [ ] Install ComfyUI + FLUX + LTX-2.3
-- [ ] Install Fish Speech + MusicGen + AudioCraft
-- [ ] Install Ollama + Qwen 2.5 72B + Llama 3.2 Vision
+- [ ] Install Fish Audio S2 Pro + ACE-Step 1.5 + AudioCraft
+- [ ] Install Ollama + Qwen 3.5 + Llama 3.2 Vision
 - [ ] Build basic scene JSON schema
 - [ ] Build FFmpeg composer (core assembly)
 - [ ] Test: manual script → images → video → voice → composed video
@@ -3788,9 +3788,9 @@ ai-video-factory/
 ### Sprint 3: Production Pipeline (Week 4-5)
 - [ ] Build FLUX image generation pipeline
 - [ ] Build LTX-2.3 video generation pipeline
-- [ ] Build Fish Speech voice pipeline
-- [ ] Build MusicGen music pipeline
-- [ ] Build AudioGen SFX pipeline
+- [ ] Build Fish Audio S2 Pro voice pipeline
+- [ ] Build ACE-Step 1.5 music pipeline
+- [ ] Build MOSS-SoundEffect SFX pipeline
 - [ ] Build GPU scheduler (sequential queue)
 - [ ] Test: scenes JSON → full video automatically
 
@@ -3886,7 +3886,7 @@ ai-video-factory/
 | Item | Cost |
 |------|------|
 | Electricity (~300W avg, 24/7) | ~$20-40 |
-| LLM (local Qwen 2.5 72B) | $0 (electricity only) |
+| LLM (local Qwen 3.5) | $0 (electricity only) |
 | ElevenLabs (optional) | $0-22 |
 | Domain + hosting (optional dashboard) | $0-10 |
 | **Total** | **$20-$120/month** |
@@ -3912,8 +3912,8 @@ ai-video-factory/
 | 4 - Compliance | Script blocked | Alert Yusif, pause job |
 | 5 - Images | FLUX fails/OOM | Restart GPU, retry. Fallback: lower resolution |
 | 5 - Video | LTX-2.3 fails | Fallback: Ken Burns on FLUX image |
-| 5 - Voice | Fish Speech glitch | Re-generate. Fallback: ElevenLabs API |
-| 5 - Music | MusicGen fails | Fallback: pre-made royalty-free tracks |
+| 5 - Voice | Fish Audio S2 Pro glitch | Re-generate. Fallback: ElevenLabs API |
+| 5 - Music | ACE-Step 1.5 fails | Fallback: pre-made royalty-free tracks |
 | 5 - Music | Content ID claim detected | Re-generate with different seed/prompt + pitch shift + re-check |
 | 5 - Compose | FFmpeg error | Log error, retry with adjusted parameters |
 | 6 - Visual QA | Images don't match | Regenerate failed images (max 2 rounds) |
@@ -3934,7 +3934,7 @@ ai-video-factory/
 ### 9. YouTube Shorts Pipeline 🎬
 - **Trigger:** Runs automatically after every long-form video is published
 - **Process:**
-  1. Qwen 2.5 72B analyzes the script → selects 3-5 strongest moments (hooks, shocking facts, dramatic reveals)
+  1. Qwen 3.5 analyzes the script → selects 3-5 strongest moments (hooks, shocking facts, dramatic reveals)
   2. FFmpeg extracts the corresponding video segments
   3. Auto-crop 16:9 → 9:16 (vertical) with smart framing (center on subject)
   4. Add large Arabic subtitles (burned-in, bold, centered — Shorts style)
@@ -3966,7 +3966,7 @@ ai-video-factory/
       tone: "warm, educational, engaging"
       channels: ["science_ar"]
   ```
-- **Setup:** Record 1-3 minutes reference audio per voice → Fish Speech clones it
+- **Setup:** Record 1-3 minutes reference audio per voice → Fish Audio S2 Pro clones it
 - **Consistency:** Same voice across all videos on a channel builds audience trust
 
 ### 11. Content Calendar Agent 📅
@@ -3988,7 +3988,7 @@ ai-video-factory/
 ### 12. Watch Time Optimizer 📈
 - **Purpose:** Learn from audience behavior to improve future scripts
 - **Data source:** YouTube Analytics API — retention curve per video
-- **Analysis (local Qwen 2.5 72B):**
+- **Analysis (local Qwen 3.5):**
   - Where do viewers drop off? (timestamp → which scene/section)
   - Which hooks retain >90% viewers past 30 seconds?
   - Which section types lose viewers? (long explanations? slow pacing?)
@@ -4006,8 +4006,8 @@ ai-video-factory/
 - **Purpose:** Same video → multiple languages → multiple channels → multiplied revenue
 - **Target languages:** English, Turkish, Urdu, French, Spanish
 - **Process:**
-  1. Qwen 2.5 72B translates Arabic script → target language
-  2. Fish Speech generates voice in target language (with language-specific voice profile)
+  1. Qwen 3.5 translates Arabic script → target language
+  2. Fish Audio S2 Pro generates voice in target language (with language-specific voice profile)
   3. FFmpeg swaps audio track + updates text overlays
   4. Update thumbnails with translated title text
   5. New SEO metadata per language (Phase 2 re-runs for target language)
@@ -4353,7 +4353,7 @@ ai-video-factory/
   | excited | 1.15x | higher | Sports, achievements |
   | whisper | 0.8x | lower | Secrets, tension |
   | reflective | 0.95x | soft | Conclusions |
-- **Implementation:** Fish Speech parameters adjusted per scene
+- **Implementation:** Fish Audio S2 Pro parameters adjusted per scene
 - **Fallback:** If emotion control fails → use neutral + rely on music for emotion
 - **Impact:** Massive quality difference — sounds like a real narrator, not AI
 
@@ -4390,7 +4390,7 @@ ai-video-factory/
   ```
 - **Ambient library (pre-generated):**
   - City streets, desert wind, rain, ocean, crowd murmur, office, war zone
-  - Generated once via AudioGen → reused across videos
+  - Generated once via MOSS-SoundEffect → reused across videos
 - **FFmpeg mixing:** All 6 layers composed with precise timing
 
 ### 32. AI Virtual Presenter 🧑‍💻
@@ -4416,7 +4416,7 @@ ai-video-factory/
     → Used during: documentary footage, data, maps
   ```
 - **Per scene:** `"presenter_mode": "pip" | "fullscreen" | "none"`
-- **Lip sync:** Audio from Fish Speech → SadTalker syncs lips to narration
+- **Lip sync:** Audio from Fish Audio S2 Pro → SadTalker syncs lips to narration
 - **Timeline:** Start after core pipeline is stable (Month 3+)
 
 ### 33. 4K AI Upscaling 🔍

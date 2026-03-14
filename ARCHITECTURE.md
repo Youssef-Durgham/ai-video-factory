@@ -29,7 +29,7 @@
 │  │     │       Manual Review            │  ├─ VideoGen         │      │  │
 │  │     ▼                               │  ├─ AudioCoordinator │      │  │
 │  │  Phase 9 ← (cron)                  │  │   ├─ VoiceGen     │      │  │
-│  │  Intelligence                       │  │   ├─ MusicGen     │      │  │
+│  │  Intelligence                       │  │   ├─ ACE-Step 1.5     │      │  │
 │  │                                     │  │   └─ SFXGen       │      │  │
 │  │                                     │  └─ VideoComposer    │      │  │
 │  │                                     └──────────────────────┘      │  │
@@ -62,13 +62,13 @@ OS:   Linux (Ubuntu 22.04) or Windows 11
 ### Tech Stack
 ```
 Language:       Python 3.11+
-LLM:            Qwen 2.5 72B Q4 (via Ollama)
+LLM:            Qwen 3.5 Q4 (via Ollama)
 Vision LLM:     Llama 3.2 Vision 11B (via Ollama)
 Image Gen:      FLUX.1-dev (via ComfyUI)
 Video Gen:      LTX-2.3 (via ComfyUI)
-Voice Clone:    Fish Speech 1.5 (local)
-Music Gen:      MusicGen-large (via audiocraft)
-SFX Gen:        AudioGen-medium (via audiocraft)
+Voice Clone:    Fish Audio S2 Pro (local)
+Music Gen:      ACE-Step 1.5 (via audiocraft)
+SFX Gen:        MOSS-SoundEffect (via audiocraft)
 Upscaling:      Real-ESRGAN (CPU)
 Presenter:      SadTalker / MuseTalk (optional)
 Video Compose:  FFmpeg + MoviePy + Pillow
@@ -169,7 +169,7 @@ ai-video-factory/
 │   ├── phase3_script/
 │   │   ├── __init__.py
 │   │   ├── researcher.py           # Web research agent
-│   │   ├── writer.py               # Script writer (Qwen 72B)
+│   │   ├── writer.py               # Script writer (Qwen 3.5)
 │   │   ├── reviewer.py             # Script reviewer + fact checker
 │   │   └── splitter.py             # Scene splitter → JSON
 │   │
@@ -192,12 +192,12 @@ ai-video-factory/
 │   │   ├── voice_clone.py          # Voice cloning (one-time setup)
 │   │   ├── voice_gen.py            # TTS with cloned voice
 │   │   ├── voice_selector.py       # Smart voice selection agent
-│   │   ├── music_gen.py            # MusicGen background music
-│   │   ├── sfx_gen.py              # AudioGen sound effects
+│   │   ├── music_gen.py            # ACE-Step 1.5 background music
+│   │   ├── sfx_gen.py              # MOSS-SoundEffect sound effects
 │   │   ├── content_id_guard.py     # Audio fingerprint protection
 │   │   ├── upscaler.py             # Real-ESRGAN 4K upscale
 │   │   ├── text_animator.py        # Animated Arabic text overlay system
-│   │   ├── font_selector.py        # AI font + animation selection (Qwen 72B)
+│   │   ├── font_selector.py        # AI font + animation selection (Qwen 3.5)
 │   │   ├── color_grader.py         # Color grading + LUT application
 │   │   ├── transition_engine.py    # AI-driven scene transitions
 │   │   ├── music_scene_sync.py     # Per-mood-zone music generation
@@ -404,7 +404,7 @@ gpu:
 ollama:
   host: "http://localhost:11434"
   models:
-    script: "qwen2.5:72b-instruct-q4_K_M"
+    script: "qwen3.5:latest"
     vision: "llama3.2-vision:11b"
   keep_alive: "0"                   # Unload immediately after use
   num_parallel: 1
@@ -424,15 +424,15 @@ comfyui:
 
 # ─── Voice Cloning ────────────────────────
 voice:
-  engine: "fish_speech"             # "fish_speech" | "openaudios1" | "xtts"
-  model_path: "models/fish_speech_1.5"
+  engine: "fish_audio_s2_pro"             # "fish_audio_s2_pro" | "openaudios1" | "xtts"
+  model_path: "models/fish_audio_s2_pro"
   fallback_engine: "elevenlabs"     # API fallback
   elevenlabs_api_key: "${ELEVENLABS_API_KEY}"  # from .env
 
 # ─── Audio Generation ─────────────────────
 audio:
-  music_model: "facebook/musicgen-large"
-  sfx_model: "facebook/audiogen-medium"
+  music_model: "facebook/ACE-Step 1.5"
+  sfx_model: "facebook/MOSS-SoundEffect"
   sample_rate: 44100
   music_temperature: 0.9            # Higher = more original
   
@@ -660,10 +660,10 @@ class JobStatus(str, Enum):
     
     # Phase 5+6 sub-states (asset generation + verification)
     IMAGES        = "images"           # FLUX image generation
-    IMAGE_QA      = "image_qa"         # 6A: Qwen2.5-VL verifies images vs script
+    IMAGE_QA      = "image_qa"         # 6A: Qwen 3.5-VL verifies images vs script
     IMAGE_REGEN   = "image_regen"      # Regenerate failed images
     VIDEO         = "video"            # LTX-2.3 video generation
-    VIDEO_QA      = "video_qa"         # 6B: Qwen2.5-VL verifies video clips vs script
+    VIDEO_QA      = "video_qa"         # 6B: Qwen 3.5-VL verifies video clips vs script
     VIDEO_REGEN   = "video_regen"      # Regenerate failed clips (or Ken Burns fallback)
     VOICE         = "voice"
     MUSIC         = "music"
@@ -735,22 +735,22 @@ TRANSITIONS: dict[JobStatus, list[JobStatus]] = {
 
 # Which states require which GPU model
 GPU_REQUIREMENTS: dict[JobStatus, Optional[str]] = {
-    JobStatus.RESEARCH:     "qwen2.5:72b",
-    JobStatus.SEO:          "qwen2.5:72b",
-    JobStatus.SCRIPT:       "qwen2.5:72b",
-    JobStatus.COMPLIANCE:   "qwen2.5:72b",
+    JobStatus.RESEARCH:     "qwen3.5:latest",
+    JobStatus.SEO:          "qwen3.5:latest",
+    JobStatus.SCRIPT:       "qwen3.5:latest",
+    JobStatus.COMPLIANCE:   "qwen3.5:latest",
     JobStatus.IMAGES:       "flux",
-    JobStatus.IMAGE_QA:     "qwen2.5-vl:72b",      # Vision verification
+    JobStatus.IMAGE_QA:     "Qwen 3.5-VL:72b",      # Vision verification
     JobStatus.IMAGE_REGEN:  "flux",
     JobStatus.VIDEO:        "ltx",
-    JobStatus.VIDEO_QA:     "qwen2.5-vl:72b",      # Vision verification
+    JobStatus.VIDEO_QA:     "Qwen 3.5-VL:72b",      # Vision verification
     JobStatus.VIDEO_REGEN:  "ltx",                  # Or Ken Burns (CPU)
-    JobStatus.VOICE:        "fish_speech",
-    JobStatus.MUSIC:        "musicgen",
-    JobStatus.SFX:          "audiogen",
+    JobStatus.VOICE:        "fish_audio_s2_pro",
+    JobStatus.MUSIC:        "ACE-Step 1.5",
+    JobStatus.SFX:          "MOSS-SoundEffect",
     JobStatus.COMPOSE:      None,             # CPU only (FFmpeg)
-    JobStatus.OVERLAY_QA:   "qwen2.5-vl:72b",   # Verify text overlays
-    JobStatus.FINAL_QA:     "qwen2.5-vl:72b",   # Vision for frame analysis + text for compliance
+    JobStatus.OVERLAY_QA:   "Qwen 3.5-VL:72b",   # Verify text overlays
+    JobStatus.FINAL_QA:     "Qwen 3.5-VL:72b",   # Vision for frame analysis + text for compliance
     JobStatus.MANUAL_REVIEW: None,            # Waiting for human
     JobStatus.PUBLISH:      "flux",           # Thumbnails
 }
@@ -1080,7 +1080,7 @@ class ResourceCoordinator:
         self.current_model = None
     
     def _get_model_type(self, model_name: str) -> str:
-        if model_name in ("qwen2.5:72b", "qwen2.5-vl:72b"):
+        if model_name in ("qwen3.5:latest", "Qwen 3.5-VL:72b"):
             return "ollama"
         elif model_name in ("flux", "ltx"):
             return "comfyui"
@@ -1807,7 +1807,7 @@ Architecture:
 ┌───────────────────────────────────────────────────────────────────┐
 │                     TEXT ANIMATION PIPELINE                        │
 │                                                                   │
-│  1. AI Font Selector (Qwen 72B)                                  │
+│  1. AI Font Selector (Qwen 3.5)                                  │
 │     Script mood + topic → selects font + animation style          │
 │                                                                   │
 │  2. Text Renderer (Pillow + Cairo)                                │
@@ -2003,7 +2003,7 @@ ANIMATION_PRESETS = {
 
 class FontAnimationSelector:
     """
-    Uses Qwen 72B to analyze script and select optimal font + animation.
+    Uses Qwen 3.5 to analyze script and select optimal font + animation.
     Runs during Phase 3 (Script) — decision stored in DB for Phase 5 (Compose).
     
     Why AI selection:
@@ -2014,7 +2014,7 @@ class FontAnimationSelector:
     
     def select(self, script: dict, channel_config: dict) -> FontAnimationConfig:
         """
-        Qwen 72B prompt:
+        Qwen 3.5 prompt:
         ┌──────────────────────────────────────────────────────────┐
         │ You are a professional Arabic video typographer.          │
         │                                                          │
@@ -2209,7 +2209,7 @@ class WordByWordAnimation:
     Syncs word appearance with narration audio.
     
     Method:
-    1. Get word-level timestamps from voice generation (Fish Speech outputs these)
+    1. Get word-level timestamps from voice generation (Fish Audio S2 Pro outputs these)
     2. Each word fades/slides in at exactly its spoken timestamp
     3. Creates "karaoke-style" text that follows the narrator
     
@@ -2257,7 +2257,7 @@ Heavy checks (full mix analysis) run after COMPOSE.
 
 class VoiceQA:
     """
-    Verify Fish Speech voice output quality.
+    Verify Fish Audio S2 Pro voice output quality.
     
     LAYER 1: DETERMINISTIC (signal processing)
     ├── Silence detection
@@ -2284,7 +2284,7 @@ class VoiceQA:
     │   → Word Error Rate (WER) calculation
     │   → WER > 15% = pronunciation problems
     ├── Arabic-specific checks
-    │   → Common Fish Speech Arabic errors:
+    │   → Common Fish Audio S2 Pro Arabic errors:
     │     - ع vs أ confusion
     │     - ح vs ه confusion  
     │     - Tashkeel (diacritics) pronunciation
@@ -2325,7 +2325,7 @@ class VoiceQA:
 
 class MusicQA:
     """
-    Verify MusicGen output + scene mood alignment.
+    Verify ACE-Step 1.5 output + scene mood alignment.
     
     LAYER 1: DETERMINISTIC
     ├── Duration match (expected vs actual)
@@ -2481,7 +2481,7 @@ class ColorGrader:
 AI-driven transition selection between scenes.
 NOT just crossfade everywhere — transitions convey meaning.
 
-Runs during Phase 3 (Script) — Qwen 72B analyzes scene pairs
+Runs during Phase 3 (Script) — Qwen 3.5 analyzes scene pairs
 and assigns transitions. Stored in scenes.transition_type (already in DB).
 """
 
@@ -2523,7 +2523,7 @@ TRANSITIONS = {
 
 class TransitionSelector:
     """
-    Qwen 72B analyzes adjacent scene pairs → selects optimal transition.
+    Qwen 3.5 analyzes adjacent scene pairs → selects optimal transition.
     
     Prompt per scene pair:
     ┌────────────────────────────────────────────────────┐
@@ -2556,7 +2556,7 @@ Instead of ONE track for the whole video → segmented music per mood zone.
 
 Pipeline:
 1. Phase 3 (Script): Group consecutive scenes by mood → "mood zones"
-2. Phase 5 (Music): Generate one MusicGen track per mood zone
+2. Phase 5 (Music): Generate one ACE-Step 1.5 track per mood zone
 3. Phase 5 (Compose): Crossfade between music tracks at zone transitions
 """
 
@@ -2586,7 +2586,7 @@ class MusicSceneSync:
     
     Step 2: Per-Zone Music Generation
     ─────────────────────────────────
-    MusicGen prompt per zone:
+    ACE-Step 1.5 prompt per zone:
     - Zone A: "tense documentary background music, minor key, sparse, 45 seconds"
     - Zone B: "hopeful uplifting background, major key, gentle strings, 30 seconds"
     - Zone C: "dramatic climax orchestral, building intensity, 50 seconds"
@@ -2643,7 +2643,7 @@ class PacingAnalyzer:
     ├── Every 2-3 minutes: at least one "pace change" (±50% duration shift)
     └── Total video pacing score: variance of durations should be > threshold
     
-    4. CONTENT-BASED ADJUSTMENTS (Qwen 72B):
+    4. CONTENT-BASED ADJUSTMENTS (Qwen 3.5):
     ├── Scene has statistics/data → +3s (reader needs time)
     ├── Scene has emotional quote → +2s (let it land)
     ├── Scene is visual transition → -3s (keep moving)
@@ -2661,7 +2661,7 @@ class PacingAnalyzer:
         2. Apply duration guidelines
         3. Check rhythm patterns
         4. Apply anti-monotony rules
-        5. Content-based fine-tuning (Qwen 72B)
+        5. Content-based fine-tuning (Qwen 3.5)
         6. Validate total duration within target range
         """
         pass
@@ -2808,7 +2808,7 @@ Runs AFTER voice generation (we now know exact narration duration per scene).
 class SceneDurationOptimizer:
     """
     INPUTS:
-    ├── Narration audio duration per scene (from Fish Speech)
+    ├── Narration audio duration per scene (from Fish Audio S2 Pro)
     ├── Visual complexity score (from FLUX prompt analysis)
     ├── Scene type (action, dialogue, visual showcase, data display)
     ├── Text overlay amount (more text = more reading time needed)
@@ -3069,7 +3069,7 @@ class FactoryDB:
         flags JSON,                          -- ["low_confidence_composition", "near_threshold", ...]
         
         -- Metadata
-        model_used TEXT,                     -- 'qwen2.5-vl:72b'
+        model_used TEXT,                     -- 'Qwen 3.5-VL:72b'
         inference_time_ms INTEGER,           -- How long the vision check took
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         
@@ -3084,7 +3084,7 @@ class FactoryDB:
     def save_rubric(self, job_id: str, scene_index: int, asset_type: str,
                     check_phase: str, attempt: int, deterministic: dict,
                     rubric_scores: dict, weighted_score: float, verdict: str,
-                    flags: list, hard_fail: str = None, model: str = "qwen2.5-vl:72b",
+                    flags: list, hard_fail: str = None, model: str = "Qwen 3.5-VL:72b",
                     inference_ms: int = 0):
         """Save complete QA rubric for a scene/asset."""
         self.conn.execute("""
@@ -3201,13 +3201,13 @@ class GPUMemoryManager:
     
     # Expected VRAM per model
     MODEL_VRAM = {
-        "qwen2.5:72b":         16.0,   # GB (GPU portion, rest offloads to RAM)
+        "qwen3.5:latest":         16.0,   # GB (GPU portion, rest offloads to RAM)
         "llama3.2-vision:11b":  7.0,
         "flux":                 12.0,
         "ltx":                  12.0,
-        "fish_speech":           4.0,
-        "musicgen":              4.0,
-        "audiogen":              4.0,
+        "fish_audio_s2_pro":           4.0,
+        "ACE-Step 1.5":              4.0,
+        "MOSS-SoundEffect":              4.0,
         "sadtalker":             4.0,
     }
     
@@ -3416,7 +3416,7 @@ Each phase is a self-contained module. Build and test independently.
 ```
 Input:  None (or manual topic from Telegram)
 Output: Ranked topic list → DB: research table
-LLM:    Qwen 72B (already loaded in GPU Slot 1)
+LLM:    Qwen 3.5 (already loaded in GPU Slot 1)
 APIs:   YouTube Data API v3, pytrends, feedparser
 
 Files to build:
@@ -3440,7 +3440,7 @@ Files to build:
 │
 ├── topic_ranker.py
 │   └── rank_topics(youtube_data, web_data, channel_config) → list[dict]
-│       Uses: Qwen 72B to analyze + score
+│       Uses: Qwen 3.5 to analyze + score
 │       Scoring: search_volume * 0.3 + competition_inv * 0.25 + 
 │                trend_velocity * 0.25 + category_match * 0.2
 │       Returns: [{topic, score, suggested_channel, suggested_angle, sources}]
@@ -3456,7 +3456,7 @@ Files to build:
 ```
 Input:  Selected topic (from DB: jobs.topic)
 Output: SEO package → DB: seo_data table
-LLM:    Qwen 72B (still loaded from Phase 1)
+LLM:    Qwen 3.5 (still loaded from Phase 1)
 APIs:   YouTube Data API v3, yt-dlp
 
 Files to build:
@@ -3472,19 +3472,19 @@ Files to build:
 │
 ├── competitor_analysis.py
 │   └── find_content_gap(topic: str, competitors: list) → dict
-│       Uses: Qwen 72B analyzes competitor titles/descriptions
+│       Uses: Qwen 3.5 analyzes competitor titles/descriptions
 │       Returns: {unique_angles: [...], unanswered_questions: [...]}
 │
 ├── title_generator.py
 │   └── generate_titles(topic, keywords, gap_analysis) → list[dict]
-│       Uses: Qwen 72B generates 10 titles
+│       Uses: Qwen 3.5 generates 10 titles
 │       Scoring: keyword_density * 0.3 + emotional_hook * 0.3 + 
 │                length_optimal * 0.2 + uniqueness * 0.2
 │       Returns: [{title, score, keywords_included}]  # sorted by score
 │
 └── tag_planner.py
     └── plan_tags_description(topic, keywords, title) → dict
-        Uses: Qwen 72B
+        Uses: Qwen 3.5
         Returns: {
             tags: [...],  # 30 tags
             description_template: str,
@@ -3496,18 +3496,18 @@ Files to build:
 ```
 Input:  SEO data + topic (from DB)
 Output: Approved script + scenes JSON → DB: scripts + scenes tables
-LLM:    Qwen 72B (still loaded)
+LLM:    Qwen 3.5 (still loaded)
 
 Files to build:
 ├── researcher.py
 │   └── research_topic(topic: str, angle: str) → str
 │       Uses: Brave Search API (or web_search tool) → gather 5-10 sources
-│       Uses: Qwen 72B to synthesize into research document
+│       Uses: Qwen 3.5 to synthesize into research document
 │       Returns: research_text (2000-5000 words with citations)
 │
 ├── writer.py
 │   └── write_script(research: str, seo: dict, channel: dict, rules: list) → str
-│       Uses: Qwen 72B with structured prompt
+│       Uses: Qwen 3.5 with structured prompt
 │       Inputs include: performance_rules from Phase 9 (DB)
 │       Inputs include: anti_repetition patterns (DB)
 │       Inputs include: narrative_style selection
@@ -3535,7 +3535,7 @@ Files to build:
 │
 ├── reviewer.py
 │   └── review_script(script: str, research: str, seo: dict) → ReviewResult
-│       Uses: Qwen 72B (separate prompt — acts as critic)
+│       Uses: Qwen 3.5 (separate prompt — acts as critic)
 │       Checks: factual accuracy, engagement, keywords, pacing, grammar
 │       Returns: ReviewResult(approved: bool, notes: str, scores: dict)
 │       
@@ -3543,7 +3543,7 @@ Files to build:
 │
 └── splitter.py
     └── split_to_scenes(script: str, channel: dict) → list[dict]
-        Uses: Qwen 72B
+        Uses: Qwen 3.5
         Returns: list of scene dicts matching this schema:
         {
             "scene_index": int,
@@ -3570,7 +3570,7 @@ Files to build:
 ```
 Input:  Script + scenes (from DB)
 Output: Pass/Fail/Block → DB: compliance_checks table
-LLM:    Qwen 72B (still loaded)
+LLM:    Qwen 3.5 (still loaded)
 GATE:   Can BLOCK the job
 
 Files to build:
@@ -3607,7 +3607,7 @@ GPU models are swapped between sub-modules (see main.py GPU slots).
 │
 ├── voice_clone.py  (ONE-TIME SETUP)
 │   └── clone_voice(reference_wav: str, voice_id: str) → None
-│       Uses: Fish Speech 1.5
+│       Uses: Fish Audio S2 Pro
 │       Steps: denoise → normalize → create embedding → test → save
 │       Output: .pt embedding file in config/voices/embeddings/
 │
@@ -3618,21 +3618,21 @@ GPU models are swapped between sub-modules (see main.py GPU slots).
 │
 ├── voice_gen.py
 │   └── generate_voice(job_id: str, scenes: list, voice_id: str) → None
-│       Uses: Fish Speech 1.5 + clone embedding
+│       Uses: Fish Audio S2 Pro + clone embedding
 │       Per scene: narration_text + voice_emotion → WAV
 │       Quality check: pronunciation + glitch detection
 │       Saves: scene voice paths to DB
 │
 ├── music_gen.py
 │   └── generate_music(job_id: str, scenes: list) → None
-│       Uses: audiocraft.MusicGen
+│       Uses: audiocraft.ACE-Step 1.5
 │       Generates: intro, background, tension, outro tracks
 │       CRITICAL: negative prompts for originality (see BLUEPRINT §5.4)
 │       Saves: track paths to DB: audio_tracks table
 │
 ├── sfx_gen.py
 │   └── generate_sfx(job_id: str, scenes: list) → None
-│       Uses: audiocraft.AudioGen
+│       Uses: audiocraft.MOSS-SoundEffect
 │       Per scene: generate SFX from sfx tags
 │       Fallback: pre-downloaded library in data/sfx_library/
 │
@@ -3667,7 +3667,7 @@ GPU models are swapped between sub-modules (see main.py GPU slots).
 
 #### Phase 6: Visual QA — Deep Verification (`src/phase6_visual_qa/`)
 
-> **Vision Model: Qwen2.5-VL 72B** (not Llama Vision 11B)
+> **Vision Model: Qwen 3.5-VL** (not Llama Vision 11B)
 > Reason: Arabic text understanding, complex scene analysis, much higher accuracy.
 > GPU: Runs via Ollama, same slot as Qwen text (already have 72B quantized).
 >
@@ -3687,7 +3687,7 @@ GPU models are swapped between sub-modules (see main.py GPU slots).
 ```
 Input:  Generated images + video clips + script scenes
 Output: Structured rubric scores per asset → DB: scenes.image_rubric (JSON), scenes.video_rubric (JSON)
-LLM:    Qwen2.5-VL 72B (via Ollama) — JUDGE role only
+LLM:    Qwen 3.5-VL (via Ollama) — JUDGE role only
 GATE:   Combined score (vision + deterministic) → block, regen, or human review
 
 ═══════════════════════════════════════════════════════════════
@@ -3718,7 +3718,7 @@ Files to build:
 │       └─────────────────────────────────────────────────────────┘
 │       
 │       ┌─────────────────────────────────────────────────────────┐
-│       │ LAYER 2: VISION LLM RUBRIC (Qwen2.5-VL — judge role)  │
+│       │ LAYER 2: VISION LLM RUBRIC (Qwen 3.5-VL — judge role)  │
 │       │                                                         │
 │       │ Structured rubric — NOT a vague "score 1-10":           │
 │       │                                                         │
@@ -3823,7 +3823,7 @@ Files to build:
 │       └── Aspect ratio / resolution consistency
 │       
 │       LAYER 2: VISION LLM (supplementary):
-│       Send ALL images to Qwen2.5-VL:
+│       Send ALL images to Qwen 3.5-VL:
 │       "These are scenes from the same documentary.
 │        For each image, note:
 │        - Art style (photorealistic/illustrated/painted)
@@ -3902,7 +3902,7 @@ Files to build:
 │
 └── image_qa_coordinator.py  ← Orchestrates 6A
     └── run_image_qa(job_id) → ImageQAResult
-        1. Load Qwen2.5-VL 72B
+        1. Load Qwen 3.5-VL
         2. Run image_script_verifier on EACH scene
         3. Run style_checker on ALL images
         4. Run sequence_checker on ALL images in order
@@ -3934,7 +3934,7 @@ STAGE 6B: VIDEO CLIP ↔ SCRIPT VERIFICATION (after LTX, before voice)
 │       └─────────────────────────────────────────────────────────┘
 │       
 │       ┌─────────────────────────────────────────────────────────┐
-│       │ LAYER 2: VISION RUBRIC (Qwen2.5-VL — judge role)      │
+│       │ LAYER 2: VISION RUBRIC (Qwen 3.5-VL — judge role)      │
 │       │                                                         │
 │       │ Send 5 keyframes with timestamps + script context:      │
 │       │                                                         │
@@ -4037,7 +4037,7 @@ STAGE 6B: VIDEO CLIP ↔ SCRIPT VERIFICATION (after LTX, before voice)
         
         EXECUTION ORDER:
         ─────────────────
-        STEP 1: Load Qwen2.5-VL 72B
+        STEP 1: Load Qwen 3.5-VL
         
         STEP 2: IMAGE QA (Stage 6A)
           a. Verify each image vs script
@@ -4046,23 +4046,23 @@ STAGE 6B: VIDEO CLIP ↔ SCRIPT VERIFICATION (after LTX, before voice)
           d. Send image gallery to Telegram
           e. Gate: >90% pass → continue; 70-90% → regen; <70% → block
         
-        STEP 3: Unload Qwen2.5-VL → Load FLUX (if regen needed)
+        STEP 3: Unload Qwen 3.5-VL → Load FLUX (if regen needed)
           a. Regenerate failed images
-          b. Unload FLUX → Load Qwen2.5-VL → Re-verify
+          b. Unload FLUX → Load Qwen 3.5-VL → Re-verify
         
-        STEP 4: Unload Qwen2.5-VL → (PipelineRunner handles LTX loading)
+        STEP 4: Unload Qwen 3.5-VL → (PipelineRunner handles LTX loading)
           → VIDEO GENERATION HAPPENS (Phase 5b)
           → Return to Phase 6 Stage 6B
         
         STEP 5: VIDEO QA (Stage 6B)
-          a. Load Qwen2.5-VL 72B again
+          a. Load Qwen 3.5-VL again
           b. Extract keyframes from each clip
           c. Verify each video vs script
           d. Handle fallbacks (regen/ken burns)
           e. Send video gallery to Telegram
           f. Gate: >85% pass → continue; else → regen or block
         
-        STEP 6: Unload Qwen2.5-VL
+        STEP 6: Unload Qwen 3.5-VL
 ```
 
 **⚠️ HISTORICAL/POLITICAL CONTENT — Vision Limitations:**
@@ -4105,7 +4105,7 @@ IMAGES → IMAGE_QA → VIDEO_GEN → VIDEO_QA → VOICE → MUSIC → SFX → C
 ```
 Input:  Composed video with text overlays (output/[job_id]/composed.mp4)
 Output: Overlay QA results → DB: qa_rubrics (asset_type='overlay')
-LLM:    Qwen2.5-VL 72B
+LLM:    Qwen 3.5-VL
 STATUS: OVERLAY_QA (between COMPOSE and FINAL_QA)
 
 Files to build:
@@ -4138,9 +4138,9 @@ Files to build:
 │       └─────────────────────────────────────────────────────────┘
 │       
 │       ┌─────────────────────────────────────────────────────────┐
-│       │ LAYER 2: VISION LLM (Qwen2.5-VL — supplementary)      │
+│       │ LAYER 2: VISION LLM (Qwen 3.5-VL — supplementary)      │
 │       │                                                         │
-│       │ Send frame with overlay to Qwen2.5-VL:                  │
+│       │ Send frame with overlay to Qwen 3.5-VL:                  │
 │       │ "This documentary frame has Arabic text overlay.         │
 │       │  Expected text: '{expected_text}'                        │
 │       │                                                         │
@@ -4196,7 +4196,7 @@ Files to build:
 ```
 Input:  Composed video (output/[job_id]/final.mp4) — FULL assembled video
 Output: Pass/Fail → DB: compliance_checks table
-LLM:    Qwen2.5-VL 72B (vision) + Qwen 72B (text compliance)
+LLM:    Qwen 3.5-VL (vision) + Qwen 3.5 (text compliance)
 GATE:   Can block
 
 Files to build:
@@ -4204,7 +4204,7 @@ Files to build:
 │   Uses: ffprobe (part of FFmpeg) — no GPU needed
 │
 ├── content_check.py      → Extract 1 frame per scene from FINAL video
-│   Uses: Qwen2.5-VL 72B
+│   Uses: Qwen 3.5-VL
 │   Prompt: "This is the final assembled documentary video.
 │            Here are keyframes from {N} scenes with their narration.
 │            Check:
@@ -4215,7 +4215,7 @@ Files to build:
 │            5. Any frames that would get the video flagged?"
 │   Returns: ContentCheckResult(score, issues: list)
 │
-├── final_compliance.py   → One last YouTube policy sweep (Qwen 72B text)
+├── final_compliance.py   → One last YouTube policy sweep (Qwen 3.5 text)
 │
 ├── telegram_final_preview.py  ← NEW: Send final video to Yusif
 │   └── send_final_preview(job_id) → None
@@ -4236,8 +4236,8 @@ Files to build:
 └── video_qa_coordinator.py
     └── run(job_id) → Phase7Result
         1. technical_check (CPU — no GPU needed)
-        2. Load Qwen2.5-VL 72B → content_check (vision)
-        3. Swap to Qwen 72B → final_compliance (text)
+        2. Load Qwen 3.5-VL → content_check (vision)
+        3. Swap to Qwen 3.5 → final_compliance (text)
         4. Send final preview to Telegram
         5. Return aggregate result + gate decision
 ```
@@ -4267,7 +4267,7 @@ Files to build:
 ```
 Input:  3 generated thumbnail variants
 Output: Ranked thumbnails → best goes to YouTube, all 3 to A/B test
-LLM:    Qwen2.5-VL 72B
+LLM:    Qwen 3.5-VL
 
 ┌─────────────────────────────────────────────────────────────┐
 │ LAYER 1: DETERMINISTIC                                      │
@@ -4294,7 +4294,7 @@ LLM:    Qwen2.5-VL 72B
 └─────────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────────┐
-│ LAYER 2: VISION RUBRIC (Qwen2.5-VL)                       │
+│ LAYER 2: VISION RUBRIC (Qwen 3.5-VL)                       │
 │                                                             │
 │ A. Click Appeal (1-10)                                      │
 │    "Would you click this thumbnail on YouTube?"             │
@@ -4541,8 +4541,8 @@ praw>=7.7                 # Reddit API (optional)
 torch>=2.1
 torchaudio>=2.1
 transformers>=4.36
-audiocraft>=1.3           # MusicGen + AudioGen
-# fish-speech             # Install separately from GitHub
+audiocraft>=1.3           # ACE-Step 1.5 + MOSS-SoundEffect
+# fish-audio-s2-pro             # Install separately from GitHub
 
 # ═══ Image/Video Processing ═══
 Pillow>=10.0              # Arabic text rendering
@@ -4592,16 +4592,16 @@ TEST:
 - Telegram send message ✓
 
 THEN:
-8. Install Ollama + Qwen 2.5 72B Q4
+8. Install Ollama + Qwen 3.5 Q4
 9. Install ComfyUI + FLUX + LTX-2.3
-10. Install Fish Speech 1.5
-11. Install audiocraft (MusicGen + AudioGen)
+10. Install Fish Audio S2 Pro
+11. Install audiocraft (ACE-Step 1.5 + MOSS-SoundEffect)
 
 TEST:
 - Ollama: generate Arabic text ✓
 - ComfyUI: generate 1 image ✓
-- Fish Speech: clone 1 voice + generate 1 sentence ✓
-- MusicGen: generate 15 sec music ✓
+- Fish Audio S2 Pro: clone 1 voice + generate 1 sentence ✓
+- ACE-Step 1.5: generate 15 sec music ✓
 
 12. src/phase5_production/composer.py  — FFmpeg assembly
 TEST: manual images + manual voice → composed video ✓
@@ -4726,15 +4726,15 @@ cp .env.example .env
 # Edit .env with your API keys
 
 # 5. Install Ollama + models
-ollama pull qwen2.5:72b-instruct-q4_K_M
+ollama pull qwen3.5:latest
 ollama pull llama3.2-vision:11b
 
 # 6. Install ComfyUI (separate process)
 # Follow: https://github.com/comfyanonymous/ComfyUI
 # Download FLUX.1-dev + LTX-2.3 models into ComfyUI/models/
 
-# 7. Install Fish Speech 1.5
-# Follow: https://github.com/fishaudio/fish-speech
+# 7. Install Fish Audio S2 Pro
+# Follow: https://github.com/fishaudio/fish-audio-s2-pro
 
 # 8. Create directories
 mkdir -p data output logs/gpu logs/pipeline logs/alerts config/voices/embeddings
@@ -4765,7 +4765,7 @@ python -m src.cli run --topic "test" --channel documentary_ar  # Full test
 | GPU scheduling | Sequential with ResourceCoordinator | Single GPU — coordinator handles batching (same model = no swap) |
 | LLM hosting | Ollama (not raw transformers) | API interface, memory control via keep_alive=0, easy model switching |
 | Image gen | ComfyUI (not diffusers) | Workflow-based, supports LoRA, easy model swapping, web UI for debugging |
-| Voice | Fish Speech 1.5 clone from real recordings | Human recordings cloned = natural Arabic pronunciation |
+| Voice | Fish Audio S2 Pro clone from real recordings | Human recordings cloned = natural Arabic pronunciation |
 | Phase 5 | Sub-pipeline (3 coordinators, not 1 phase) | AssetCoordinator + AudioCoordinator + VideoComposer — most complex phase deserves structure |
 | Agents | 3 tiers: core / optimization / experimental | Clear priority. Won't confuse production-critical with nice-to-have |
 | Config | YAML (not JSON/TOML) | Readable, supports comments, good for multi-line strings |
@@ -4804,9 +4804,9 @@ class StorageManager:
         │   ├── scene_001_v1.mp4
         │   └── scene_001_final.mp4
         ├── audio/
-        │   ├── voice/                 # Fish Speech outputs
-        │   ├── music/                 # MusicGen per mood zone
-        │   └── sfx/                   # AudioGen outputs
+        │   ├── voice/                 # Fish Audio S2 Pro outputs
+        │   ├── music/                 # ACE-Step 1.5 per mood zone
+        │   └── sfx/                   # MOSS-SoundEffect outputs
         ├── overlays/                  # Animated text layers (ProRes)
         ├── compose/                   # FFmpeg intermediate
         │   ├── composed_v1.mp4        # Before overlay QA fix
@@ -4936,7 +4936,7 @@ class RetryPolicy:
 # ═══ PER-SERVICE RETRY POLICIES ═══
 
 RETRY_POLICIES = {
-    # ─── Ollama (Qwen 72B, Qwen2.5-VL) ───
+    # ─── Ollama (Qwen 3.5, Qwen 3.5-VL) ───
     "ollama": RetryPolicy(
         max_retries=3,
         initial_delay_sec=10,
@@ -4960,8 +4960,8 @@ RETRY_POLICIES = {
         # POST http://localhost:8188/queue {"clear": true}
     ),
     
-    # ─── Fish Speech ───
-    "fish_speech": RetryPolicy(
+    # ─── Fish Audio S2 Pro ───
+    "fish_audio_s2_pro": RetryPolicy(
         max_retries=2,
         initial_delay_sec=5,
         backoff_multiplier=2.0,
@@ -4970,8 +4970,8 @@ RETRY_POLICIES = {
         on_exhaust="block",
     ),
     
-    # ─── MusicGen / AudioGen ───
-    "musicgen": RetryPolicy(
+    # ─── ACE-Step 1.5 / MOSS-SoundEffect ───
+    "ACE-Step 1.5": RetryPolicy(
         max_retries=2,
         initial_delay_sec=5,
         backoff_multiplier=2.0,
@@ -5517,7 +5517,7 @@ class ServiceWatchdog(threading.Thread):
         return {"healthy": True, "free_gb": round(free_gb, 1), "detail": "OK"}
     
     def _check_ram(self) -> dict:
-        """Alert if <8GB available (Qwen 72B needs ~26GB system RAM)."""
+        """Alert if <8GB available (Qwen 3.5 needs ~26GB system RAM)."""
         available_gb = psutil.virtual_memory().available / (1024**3)
         if available_gb < 8:
             return {"healthy": False, "detail": f"LOW RAM: {available_gb:.1f}GB available"}
@@ -5776,7 +5776,7 @@ class TelegramHandlers:
         🔄 Phase: VIDEO_QA (6B — verifying clips)
         ⏱️ Time in phase: 4m 22s
         🎯 Progress: 12/15 scenes verified
-        🖥️ GPU: Qwen2.5-VL 72B loaded (14.2GB VRAM, 68°C)
+        🖥️ GPU: Qwen 3.5-VL loaded (14.2GB VRAM, 68°C)
         💾 Disk: 342GB free
         📊 YouTube Quota: 7,499/10,000 remaining
         
@@ -6228,15 +6228,15 @@ sudo apt install ffmpeg
 curl -fsSL https://ollama.com/install.sh | sh
 
 # Download models
-ollama pull qwen2.5:72b-instruct-q4_K_M    # ~42GB, Arabic text LLM
-ollama pull qwen2.5-vl:72b-instruct-q4_K_M  # ~42GB, Vision LLM (shares layers with above)
+ollama pull qwen3.5:latest    # ~42GB, Arabic text LLM
+ollama pull Qwen 3.5-VL:72b-instruct-q4_K_M  # ~42GB, Vision LLM (shares layers with above)
 
 # Configure: keep_alive=0 (free VRAM after each use)
 echo 'OLLAMA_KEEP_ALIVE=0' >> /etc/environment
 systemctl restart ollama
 
 # Verify
-ollama run qwen2.5:72b "مرحبا، كيف حالك؟"
+ollama run qwen3.5:latest "مرحبا، كيف حالك؟"
 ```
 
 ### 2.2 ComfyUI + Models
@@ -6271,26 +6271,26 @@ python main.py --listen 0.0.0.0 --port 8188
 # Verify: http://localhost:8188
 ```
 
-### 2.3 Fish Speech 1.5
+### 2.3 Fish Audio S2 Pro
 ```bash
-git clone https://github.com/fishaudio/fish-speech.git
-cd fish-speech
+git clone https://github.com/fishaudio/fish-audio-s2-pro.git
+cd fish-audio-s2-pro
 pip install -e .
 
 # Download model
-huggingface-cli download fishaudio/fish-speech-1.5 --local-dir checkpoints/fish-speech-1.5
+huggingface-cli download fishaudio/fish-audio-s2-pro-1.5 --local-dir checkpoints/fish-audio-s2-pro-1.5
 
 # Verify
-python -m tools.api --checkpoint checkpoints/fish-speech-1.5 --listen 0.0.0.0:8080
+python -m tools.api --checkpoint checkpoints/fish-audio-s2-pro-1.5 --listen 0.0.0.0:8080
 ```
 
-### 2.4 MusicGen + AudioGen
+### 2.4 ACE-Step 1.5 + MOSS-SoundEffect
 ```bash
 pip install audiocraft
 
 # Models auto-download on first use (~3GB each)
 # Verify:
-python -c "from audiocraft.models import MusicGen; m = MusicGen.get_pretrained('facebook/musicgen-medium'); print('OK')"
+python -c "from audiocraft.models import ACE-Step 1.5; m = ACE-Step 1.5.get_pretrained('facebook/ACE-Step 1.5-medium'); print('OK')"
 ```
 
 ### 2.5 Whisper (for Audio QA)
@@ -6341,7 +6341,7 @@ cp channels.example.yaml channels.yaml
 # - telegram.bot_token
 # - telegram.chat_id
 # - youtube.client_secret_path
-# - paths to ComfyUI, Fish Speech
+# - paths to ComfyUI, Fish Audio S2 Pro
 # - GPU settings
 
 # YouTube API setup:
@@ -6367,9 +6367,9 @@ sqlite3 data/factory.db ".tables"
 python -m src.core.health_check
 
 # Should output:
-# ✅ Ollama: running, qwen2.5:72b available
+# ✅ Ollama: running, qwen3.5:latest available
 # ✅ ComfyUI: running on :8188, FLUX loaded
-# ✅ Fish Speech: running on :8080
+# ✅ Fish Audio S2 Pro: running on :8080
 # ✅ FFmpeg: v5.1.2
 # ✅ GPU: RTX 3090, 24GB VRAM, driver 545.x
 # ✅ RAM: 128GB (112GB available)
