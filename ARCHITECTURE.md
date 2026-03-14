@@ -2279,7 +2279,7 @@ class VoiceQA:
         → Scene-to-scene RMS variation > 6dB = inconsistent
     
     LAYER 2: WHISPER STT VERIFICATION (CPU — no GPU needed)
-    ├── Run Whisper (tiny/base) on generated audio
+    ├── Run Whisper large-v2 on generated audio
     │   → Compare transcription vs original script text
     │   → Word Error Rate (WER) calculation
     │   → WER > 15% = pronunciation problems
