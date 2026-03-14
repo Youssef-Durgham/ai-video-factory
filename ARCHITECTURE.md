@@ -63,7 +63,7 @@ OS:   Linux (Ubuntu 22.04) or Windows 11
 ```
 Language:       Python 3.11+
 LLM:            Qwen 3.5 Q4 (via Ollama)
-Vision LLM:     Llama 3.2 Vision 11B (via Ollama)
+Vision LLM:     Qwen 3.5-27B (unified vision) (via Ollama)
 Image Gen:      FLUX.1-dev (via ComfyUI)
 Video Gen:      LTX-2.3 (via ComfyUI)
 Voice Clone:    Fish Audio S2 Pro (local)
@@ -404,8 +404,8 @@ gpu:
 ollama:
   host: "http://localhost:11434"
   models:
-    script: "qwen3.5:latest"
-    vision: "llama3.2-vision:11b"
+    script: "qwen3.5:27b"
+    vision: "qwen3.5:27b"
   keep_alive: "0"                   # Unload immediately after use
   num_parallel: 1
   timeout_sec: 600                  # 10 min max per LLM call
@@ -660,10 +660,10 @@ class JobStatus(str, Enum):
     
     # Phase 5+6 sub-states (asset generation + verification)
     IMAGES        = "images"           # FLUX image generation
-    IMAGE_QA      = "image_qa"         # 6A: Qwen 3.5-VL verifies images vs script
+    IMAGE_QA      = "image_qa"         # 6A: Qwen 3.5-27B verifies images vs script
     IMAGE_REGEN   = "image_regen"      # Regenerate failed images
     VIDEO         = "video"            # LTX-2.3 video generation
-    VIDEO_QA      = "video_qa"         # 6B: Qwen 3.5-VL verifies video clips vs script
+    VIDEO_QA      = "video_qa"         # 6B: Qwen 3.5-27B verifies video clips vs script
     VIDEO_REGEN   = "video_regen"      # Regenerate failed clips (or Ken Burns fallback)
     VOICE         = "voice"
     MUSIC         = "music"
@@ -735,22 +735,22 @@ TRANSITIONS: dict[JobStatus, list[JobStatus]] = {
 
 # Which states require which GPU model
 GPU_REQUIREMENTS: dict[JobStatus, Optional[str]] = {
-    JobStatus.RESEARCH:     "qwen3.5:latest",
-    JobStatus.SEO:          "qwen3.5:latest",
-    JobStatus.SCRIPT:       "qwen3.5:latest",
-    JobStatus.COMPLIANCE:   "qwen3.5:latest",
+    JobStatus.RESEARCH:     "qwen3.5:27b",
+    JobStatus.SEO:          "qwen3.5:27b",
+    JobStatus.SCRIPT:       "qwen3.5:27b",
+    JobStatus.COMPLIANCE:   "qwen3.5:27b",
     JobStatus.IMAGES:       "flux",
-    JobStatus.IMAGE_QA:     "Qwen 3.5-VL:72b",      # Vision verification
+    JobStatus.IMAGE_QA:     "Qwen 3.5-27B:72b",      # Vision verification
     JobStatus.IMAGE_REGEN:  "flux",
     JobStatus.VIDEO:        "ltx",
-    JobStatus.VIDEO_QA:     "Qwen 3.5-VL:72b",      # Vision verification
+    JobStatus.VIDEO_QA:     "Qwen 3.5-27B:72b",      # Vision verification
     JobStatus.VIDEO_REGEN:  "ltx",                  # Or Ken Burns (CPU)
     JobStatus.VOICE:        "fish_audio_s2_pro",
     JobStatus.MUSIC:        "ACE-Step 1.5",
     JobStatus.SFX:          "MOSS-SoundEffect",
     JobStatus.COMPOSE:      None,             # CPU only (FFmpeg)
-    JobStatus.OVERLAY_QA:   "Qwen 3.5-VL:72b",   # Verify text overlays
-    JobStatus.FINAL_QA:     "Qwen 3.5-VL:72b",   # Vision for frame analysis + text for compliance
+    JobStatus.OVERLAY_QA:   "Qwen 3.5-27B:72b",   # Verify text overlays
+    JobStatus.FINAL_QA:     "Qwen 3.5-27B:72b",   # Vision for frame analysis + text for compliance
     JobStatus.MANUAL_REVIEW: None,            # Waiting for human
     JobStatus.PUBLISH:      "flux",           # Thumbnails
 }
@@ -1080,7 +1080,7 @@ class ResourceCoordinator:
         self.current_model = None
     
     def _get_model_type(self, model_name: str) -> str:
-        if model_name in ("qwen3.5:latest", "Qwen 3.5-VL:72b"):
+        if model_name in ("qwen3.5:27b", "Qwen 3.5-27B:72b"):
             return "ollama"
         elif model_name in ("flux", "ltx"):
             return "comfyui"
@@ -3069,7 +3069,7 @@ class FactoryDB:
         flags JSON,                          -- ["low_confidence_composition", "near_threshold", ...]
         
         -- Metadata
-        model_used TEXT,                     -- 'Qwen 3.5-VL:72b'
+        model_used TEXT,                     -- 'Qwen 3.5-27B:72b'
         inference_time_ms INTEGER,           -- How long the vision check took
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         
@@ -3084,7 +3084,7 @@ class FactoryDB:
     def save_rubric(self, job_id: str, scene_index: int, asset_type: str,
                     check_phase: str, attempt: int, deterministic: dict,
                     rubric_scores: dict, weighted_score: float, verdict: str,
-                    flags: list, hard_fail: str = None, model: str = "Qwen 3.5-VL:72b",
+                    flags: list, hard_fail: str = None, model: str = "Qwen 3.5-27B:72b",
                     inference_ms: int = 0):
         """Save complete QA rubric for a scene/asset."""
         self.conn.execute("""
@@ -3201,8 +3201,8 @@ class GPUMemoryManager:
     
     # Expected VRAM per model
     MODEL_VRAM = {
-        "qwen3.5:latest":         16.0,   # GB (GPU portion, rest offloads to RAM)
-        "llama3.2-vision:11b":  7.0,
+        "qwen3.5:27b":         16.0,   # GB (GPU portion, rest offloads to RAM)
+        "qwen3.5:27b":  7.0,
         "flux":                 12.0,
         "ltx":                  12.0,
         "fish_audio_s2_pro":           4.0,
@@ -3667,7 +3667,7 @@ GPU models are swapped between sub-modules (see main.py GPU slots).
 
 #### Phase 6: Visual QA — Deep Verification (`src/phase6_visual_qa/`)
 
-> **Vision Model: Qwen 3.5-VL** (not Llama Vision 11B)
+> **Vision Model: Qwen 3.5-27B** (not Llama Vision 11B)
 > Reason: Arabic text understanding, complex scene analysis, much higher accuracy.
 > GPU: Runs via Ollama, same slot as Qwen text (already have 72B quantized).
 >
@@ -3687,7 +3687,7 @@ GPU models are swapped between sub-modules (see main.py GPU slots).
 ```
 Input:  Generated images + video clips + script scenes
 Output: Structured rubric scores per asset → DB: scenes.image_rubric (JSON), scenes.video_rubric (JSON)
-LLM:    Qwen 3.5-VL (via Ollama) — JUDGE role only
+LLM:    Qwen 3.5-27B (via Ollama) — JUDGE role only
 GATE:   Combined score (vision + deterministic) → block, regen, or human review
 
 ═══════════════════════════════════════════════════════════════
@@ -3718,7 +3718,7 @@ Files to build:
 │       └─────────────────────────────────────────────────────────┘
 │       
 │       ┌─────────────────────────────────────────────────────────┐
-│       │ LAYER 2: VISION LLM RUBRIC (Qwen 3.5-VL — judge role)  │
+│       │ LAYER 2: VISION LLM RUBRIC (Qwen 3.5-27B — judge role)  │
 │       │                                                         │
 │       │ Structured rubric — NOT a vague "score 1-10":           │
 │       │                                                         │
@@ -3823,7 +3823,7 @@ Files to build:
 │       └── Aspect ratio / resolution consistency
 │       
 │       LAYER 2: VISION LLM (supplementary):
-│       Send ALL images to Qwen 3.5-VL:
+│       Send ALL images to Qwen 3.5-27B:
 │       "These are scenes from the same documentary.
 │        For each image, note:
 │        - Art style (photorealistic/illustrated/painted)
@@ -3902,7 +3902,7 @@ Files to build:
 │
 └── image_qa_coordinator.py  ← Orchestrates 6A
     └── run_image_qa(job_id) → ImageQAResult
-        1. Load Qwen 3.5-VL
+        1. Load Qwen 3.5-27B
         2. Run image_script_verifier on EACH scene
         3. Run style_checker on ALL images
         4. Run sequence_checker on ALL images in order
@@ -3934,7 +3934,7 @@ STAGE 6B: VIDEO CLIP ↔ SCRIPT VERIFICATION (after LTX, before voice)
 │       └─────────────────────────────────────────────────────────┘
 │       
 │       ┌─────────────────────────────────────────────────────────┐
-│       │ LAYER 2: VISION RUBRIC (Qwen 3.5-VL — judge role)      │
+│       │ LAYER 2: VISION RUBRIC (Qwen 3.5-27B — judge role)      │
 │       │                                                         │
 │       │ Send 5 keyframes with timestamps + script context:      │
 │       │                                                         │
@@ -4037,7 +4037,7 @@ STAGE 6B: VIDEO CLIP ↔ SCRIPT VERIFICATION (after LTX, before voice)
         
         EXECUTION ORDER:
         ─────────────────
-        STEP 1: Load Qwen 3.5-VL
+        STEP 1: Load Qwen 3.5-27B
         
         STEP 2: IMAGE QA (Stage 6A)
           a. Verify each image vs script
@@ -4046,23 +4046,23 @@ STAGE 6B: VIDEO CLIP ↔ SCRIPT VERIFICATION (after LTX, before voice)
           d. Send image gallery to Telegram
           e. Gate: >90% pass → continue; 70-90% → regen; <70% → block
         
-        STEP 3: Unload Qwen 3.5-VL → Load FLUX (if regen needed)
+        STEP 3: Unload Qwen 3.5-27B → Load FLUX (if regen needed)
           a. Regenerate failed images
-          b. Unload FLUX → Load Qwen 3.5-VL → Re-verify
+          b. Unload FLUX → Load Qwen 3.5-27B → Re-verify
         
-        STEP 4: Unload Qwen 3.5-VL → (PipelineRunner handles LTX loading)
+        STEP 4: Unload Qwen 3.5-27B → (PipelineRunner handles LTX loading)
           → VIDEO GENERATION HAPPENS (Phase 5b)
           → Return to Phase 6 Stage 6B
         
         STEP 5: VIDEO QA (Stage 6B)
-          a. Load Qwen 3.5-VL again
+          a. Load Qwen 3.5-27B again
           b. Extract keyframes from each clip
           c. Verify each video vs script
           d. Handle fallbacks (regen/ken burns)
           e. Send video gallery to Telegram
           f. Gate: >85% pass → continue; else → regen or block
         
-        STEP 6: Unload Qwen 3.5-VL
+        STEP 6: Unload Qwen 3.5-27B
 ```
 
 **⚠️ HISTORICAL/POLITICAL CONTENT — Vision Limitations:**
@@ -4105,7 +4105,7 @@ IMAGES → IMAGE_QA → VIDEO_GEN → VIDEO_QA → VOICE → MUSIC → SFX → C
 ```
 Input:  Composed video with text overlays (output/[job_id]/composed.mp4)
 Output: Overlay QA results → DB: qa_rubrics (asset_type='overlay')
-LLM:    Qwen 3.5-VL
+LLM:    Qwen 3.5-27B
 STATUS: OVERLAY_QA (between COMPOSE and FINAL_QA)
 
 Files to build:
@@ -4138,9 +4138,9 @@ Files to build:
 │       └─────────────────────────────────────────────────────────┘
 │       
 │       ┌─────────────────────────────────────────────────────────┐
-│       │ LAYER 2: VISION LLM (Qwen 3.5-VL — supplementary)      │
+│       │ LAYER 2: VISION LLM (Qwen 3.5-27B — supplementary)      │
 │       │                                                         │
-│       │ Send frame with overlay to Qwen 3.5-VL:                  │
+│       │ Send frame with overlay to Qwen 3.5-27B:                  │
 │       │ "This documentary frame has Arabic text overlay.         │
 │       │  Expected text: '{expected_text}'                        │
 │       │                                                         │
@@ -4196,7 +4196,7 @@ Files to build:
 ```
 Input:  Composed video (output/[job_id]/final.mp4) — FULL assembled video
 Output: Pass/Fail → DB: compliance_checks table
-LLM:    Qwen 3.5-VL (vision) + Qwen 3.5 (text compliance)
+LLM:    Qwen 3.5-27B (vision) + Qwen 3.5 (text compliance)
 GATE:   Can block
 
 Files to build:
@@ -4204,7 +4204,7 @@ Files to build:
 │   Uses: ffprobe (part of FFmpeg) — no GPU needed
 │
 ├── content_check.py      → Extract 1 frame per scene from FINAL video
-│   Uses: Qwen 3.5-VL
+│   Uses: Qwen 3.5-27B
 │   Prompt: "This is the final assembled documentary video.
 │            Here are keyframes from {N} scenes with their narration.
 │            Check:
@@ -4236,7 +4236,7 @@ Files to build:
 └── video_qa_coordinator.py
     └── run(job_id) → Phase7Result
         1. technical_check (CPU — no GPU needed)
-        2. Load Qwen 3.5-VL → content_check (vision)
+        2. Load Qwen 3.5-27B → content_check (vision)
         3. Swap to Qwen 3.5 → final_compliance (text)
         4. Send final preview to Telegram
         5. Return aggregate result + gate decision
@@ -4267,7 +4267,7 @@ Files to build:
 ```
 Input:  3 generated thumbnail variants
 Output: Ranked thumbnails → best goes to YouTube, all 3 to A/B test
-LLM:    Qwen 3.5-VL
+LLM:    Qwen 3.5-27B
 
 ┌─────────────────────────────────────────────────────────────┐
 │ LAYER 1: DETERMINISTIC                                      │
@@ -4294,7 +4294,7 @@ LLM:    Qwen 3.5-VL
 └─────────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────────┐
-│ LAYER 2: VISION RUBRIC (Qwen 3.5-VL)                       │
+│ LAYER 2: VISION RUBRIC (Qwen 3.5-27B)                       │
 │                                                             │
 │ A. Click Appeal (1-10)                                      │
 │    "Would you click this thumbnail on YouTube?"             │
@@ -4726,8 +4726,8 @@ cp .env.example .env
 # Edit .env with your API keys
 
 # 5. Install Ollama + models
-ollama pull qwen3.5:latest
-ollama pull llama3.2-vision:11b
+ollama pull qwen3.5:27b
+ollama pull qwen3.5:27b
 
 # 6. Install ComfyUI (separate process)
 # Follow: https://github.com/comfyanonymous/ComfyUI
@@ -4936,7 +4936,7 @@ class RetryPolicy:
 # ═══ PER-SERVICE RETRY POLICIES ═══
 
 RETRY_POLICIES = {
-    # ─── Ollama (Qwen 3.5, Qwen 3.5-VL) ───
+    # ─── Ollama (Qwen 3.5, Qwen 3.5-27B) ───
     "ollama": RetryPolicy(
         max_retries=3,
         initial_delay_sec=10,
@@ -5776,7 +5776,7 @@ class TelegramHandlers:
         🔄 Phase: VIDEO_QA (6B — verifying clips)
         ⏱️ Time in phase: 4m 22s
         🎯 Progress: 12/15 scenes verified
-        🖥️ GPU: Qwen 3.5-VL loaded (14.2GB VRAM, 68°C)
+        🖥️ GPU: Qwen 3.5-27B loaded (14.2GB VRAM, 68°C)
         💾 Disk: 342GB free
         📊 YouTube Quota: 7,499/10,000 remaining
         
@@ -6228,15 +6228,15 @@ sudo apt install ffmpeg
 curl -fsSL https://ollama.com/install.sh | sh
 
 # Download models
-ollama pull qwen3.5:latest    # ~42GB, Arabic text LLM
-ollama pull Qwen 3.5-VL:72b-instruct-q4_K_M  # ~42GB, Vision LLM (shares layers with above)
+ollama pull qwen3.5:27b    # ~42GB, Arabic text LLM
+ollama pull Qwen 3.5-27B:72b-instruct-q4_K_M  # ~42GB, Vision LLM (shares layers with above)
 
 # Configure: keep_alive=0 (free VRAM after each use)
 echo 'OLLAMA_KEEP_ALIVE=0' >> /etc/environment
 systemctl restart ollama
 
 # Verify
-ollama run qwen3.5:latest "مرحبا، كيف حالك؟"
+ollama run qwen3.5:27b "مرحبا، كيف حالك؟"
 ```
 
 ### 2.2 ComfyUI + Models
@@ -6367,7 +6367,7 @@ sqlite3 data/factory.db ".tables"
 python -m src.core.health_check
 
 # Should output:
-# ✅ Ollama: running, qwen3.5:latest available
+# ✅ Ollama: running, qwen3.5:27b available
 # ✅ ComfyUI: running on :8188, FLUX loaded
 # ✅ Fish Audio S2 Pro: running on :8080
 # ✅ FFmpeg: v5.1.2

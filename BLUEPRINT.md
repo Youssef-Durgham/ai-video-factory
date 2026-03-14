@@ -1258,7 +1258,7 @@ Generate all media assets — images, video clips, voice, music, SFX — and com
 #### Deployment & First Run
 - **Full setup guide in SETUP.md** — step-by-step for AI builder or human:
   1. System setup (CUDA, Python 3.11, FFmpeg)
-  2. Model downloads (~80GB): Qwen 3.5, Qwen 3.5-VL, FLUX, LTX-2.3, Fish Audio S2 Pro, ACE-Step 1.5, Whisper
+  2. Model downloads (~80GB): Qwen 3.5, Qwen 3.5-27B, FLUX, LTX-2.3, Fish Audio S2 Pro, ACE-Step 1.5, Whisper
   3. ComfyUI setup + workflows
   4. Arabic font installation (11 families from Google Fonts)
   5. Configuration (settings.yaml, channels.yaml, YouTube OAuth)
@@ -1291,7 +1291,7 @@ Generate all media assets — images, video clips, voice, music, SFX — and com
 | Qwen 3.5 Q4 | ~12-16GB | + ~26GB system RAM |
 | FLUX.1-dev | ~12GB | — |
 | LTX-2.3 | ~12GB | — |
-| Llama 3.2 Vision | ~7GB | — |
+| Qwen 3.5-27B (unified vision) | ~7GB | — |
 | Fish Audio S2 Pro | ~4GB | — |
 | ACE-Step 1.5 | ~4GB | — |
 | MOSS-SoundEffect | ~4GB | — |
@@ -1545,14 +1545,14 @@ class GPULogger:
 
 #### Log Output Example (real production run)
 ```
-14:00:01.234 | INFO    | 🔄 LOAD START | model=qwen3.5:latest | type=llm | expected_vram=16GB | available_vram=23.5GB | temp=42°C
-14:00:46.891 | INFO    | ✅ SUCCESS LOAD | model=qwen3.5:latest | took=45.66s | vram_used=15.8GB (65.8%) | temp=48°C
-14:00:47.001 | INFO    | ⚡ GEN START | model=qwen3.5:latest | task=script_writing | batch=1 | vram=15.8GB | temp=48°C
-14:15:22.445 | INFO    | ✅ GEN END | model=qwen3.5:latest | task=script_writing | produced=1 | took=875.44s | rate=0.1/min | vram=15.9GB | temp=61°C
-14:15:22.500 | INFO    | ⚡ GEN START | model=qwen3.5:latest | task=scene_splitting | batch=1 | vram=15.9GB | temp=61°C
-14:17:55.100 | INFO    | ✅ GEN END | model=qwen3.5:latest | task=scene_splitting | produced=62 | took=152.6s | rate=24.4/min | vram=15.9GB | temp=63°C
-14:17:55.200 | INFO    | 🗑️ UNLOAD START | model=qwen3.5:latest | vram_before=15.9GB (66.3%)
-14:17:58.500 | INFO    | ✅ UNLOAD COMPLETE | model=qwen3.5:latest | took=3.3s | vram_after=0.4GB (1.7%)
+14:00:01.234 | INFO    | 🔄 LOAD START | model=qwen3.5:27b | type=llm | expected_vram=16GB | available_vram=23.5GB | temp=42°C
+14:00:46.891 | INFO    | ✅ SUCCESS LOAD | model=qwen3.5:27b | took=45.66s | vram_used=15.8GB (65.8%) | temp=48°C
+14:00:47.001 | INFO    | ⚡ GEN START | model=qwen3.5:27b | task=script_writing | batch=1 | vram=15.8GB | temp=48°C
+14:15:22.445 | INFO    | ✅ GEN END | model=qwen3.5:27b | task=script_writing | produced=1 | took=875.44s | rate=0.1/min | vram=15.9GB | temp=61°C
+14:15:22.500 | INFO    | ⚡ GEN START | model=qwen3.5:27b | task=scene_splitting | batch=1 | vram=15.9GB | temp=61°C
+14:17:55.100 | INFO    | ✅ GEN END | model=qwen3.5:27b | task=scene_splitting | produced=62 | took=152.6s | rate=24.4/min | vram=15.9GB | temp=63°C
+14:17:55.200 | INFO    | 🗑️ UNLOAD START | model=qwen3.5:27b | vram_before=15.9GB (66.3%)
+14:17:58.500 | INFO    | ✅ UNLOAD COMPLETE | model=qwen3.5:27b | took=3.3s | vram_after=0.4GB (1.7%)
 14:17:58.600 | INFO    | 🔄 LOAD START | model=FLUX.1-dev | type=comfyui | expected_vram=12GB | available_vram=23.2GB | temp=52°C
 14:18:13.200 | INFO    | ✅ SUCCESS LOAD | model=FLUX.1-dev | took=14.6s | vram_used=12.1GB (50.4%) | temp=54°C
 14:18:13.300 | INFO    | ⚡ GEN START | model=FLUX.1-dev | task=scene_images | batch=62 | vram=12.1GB | temp=54°C
@@ -1688,7 +1688,7 @@ class GPUMemoryManager:
 #### Model Loading Strategy
 ```
 Strategy 1: Ollama for LLMs (Qwen, Llama Vision)
-  → ollama run qwen3.5:latest → processes tasks → ollama stop qwen3.5:latest
+  → ollama run qwen3.5:27b → processes tasks → ollama stop qwen3.5:27b
   → VRAM freed → next model loads
 
 Strategy 2: ComfyUI for Image/Video (FLUX, LTX-2.3)
@@ -1820,7 +1820,7 @@ Phase 5a: IMAGES (FLUX)
   🗑️ Unload FLUX ──────────────────────────── (~3 sec)
 
 Phase 6: VISUAL QA (Llama Vision)
-  👁️ Load Llama 3.2 Vision ────────────────── (~10 sec)
+  👁️ Load Qwen 3.5-27B (unified vision) ────────────────── (~10 sec)
   └── Check ALL images vs script            (~5 min)
   🗑️ Unload Vision ─────────────────────────── (~3 sec)
 
@@ -2143,7 +2143,7 @@ CREATE TABLE qa_rubrics (
     flags JSON,                          -- ["low_confidence_composition", "near_threshold", ...]
     
     -- Metadata
-    model_used TEXT,                     -- 'Qwen 3.5-VL:72b'
+    model_used TEXT,                     -- 'Qwen 3.5-27B:72b'
     inference_time_ms INTEGER,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -2748,7 +2748,7 @@ def cleanup_database():
 
 ## Phase 6: QA — Deep Visual Verification ✅ GATE (TWO STAGES)
 
-> **Vision Model: Qwen 3.5-VL** — strongest open-source vision model.
+> **Vision Model: Qwen 3.5-27B** — strongest open-source vision model.
 > Runs locally via Ollama. Far more accurate than Llama Vision 11B.
 > 
 > **Phase 6 runs TWICE** — once for images, once for video clips.
@@ -2789,7 +2789,7 @@ Better to miss a subtle issue than give false confidence.
 - Black/white/corrupt frame detection
 - File integrity check
 
-**Layer 2: Vision LLM Rubric (Qwen 3.5-VL — 7 axes):**
+**Layer 2: Vision LLM Rubric (Qwen 3.5-27B — 7 axes):**
 - **A. Semantic Match** (1-10): Does image convey the MEANING of the narration?
 - **B. Visual Element Presence**: Which expected elements are present/absent/uncertain?
 - **C. Composition Quality** (1-10): Well-composed for documentary?
@@ -2806,7 +2806,7 @@ Better to miss a subtle issue than give false confidence.
 
 #### 6A.2 Style Consistency Check (Two-Layer)
 - **Deterministic:** Color histogram comparison (OpenCV), brightness/contrast distribution, pairwise distance → outlier = >2 std deviations
-- **Vision LLM:** All images sent to Qwen 3.5-VL — note art style, color temperature, lighting per image, flag breaks
+- **Vision LLM:** All images sent to Qwen 3.5-27B — note art style, color temperature, lighting per image, flag breaks
 - **Combined:** Both layers agree = high confidence flag; deterministic only = medium; LLM only = note (don't fail)
 
 #### 6A.3 Sequence Flow Check (Conservative)
@@ -2846,7 +2846,7 @@ IF <70% pass → BLOCK + alert Yusif
 - Black/white/corrupt frame detection
 - Duration check vs expected, FPS consistency
 
-**Layer 2: Vision LLM Rubric (Qwen 3.5-VL — 5 axes on keyframes):**
+**Layer 2: Vision LLM Rubric (Qwen 3.5-27B — 5 axes on keyframes):**
 - **A. Motion Plausibility** (1-10): Do keyframes show believable motion?
 - **B. Script Motion Match** (1-10): Does movement match the motion prompt?
 - **C. Temporal Coherence** (1-10): Logical time progression? No teleporting objects?
@@ -2901,7 +2901,7 @@ After FFmpeg composes the video with Arabic text overlays — verify overlays ar
 - **RTL check:** Arabic text renders right-to-left correctly, no reversed characters
 
 **Layer 2: Vision LLM (supplementary):**
-- Qwen 3.5-VL checks: readability, positioning, visual integration with documentary style, occlusion of key content
+- Qwen 3.5-27B checks: readability, positioning, visual integration with documentary style, occlusion of key content
 - 4 axes, each with score + reasoning + confidence
 
 **Auto-fix on failure** (up to 2 retries):
@@ -2925,7 +2925,7 @@ IF 2 retries failed → BLOCK + alert Yusif
 ### Purpose
 After FFmpeg composes the **FULL** final video (all clips + voice + music + SFX + text overlays) — verify the assembled product is correct.
 
-> **Vision Model: Qwen 3.5-VL** — same model as Phase 6, used here on the FINAL assembled video.
+> **Vision Model: Qwen 3.5-27B** — same model as Phase 6, used here on the FINAL assembled video.
 
 ### Components
 
@@ -2944,9 +2944,9 @@ After FFmpeg composes the **FULL** final video (all clips + voice + music + SFX 
 - **File Integrity:**
   - MP4 valid and playable, no corruption
 
-#### 7.2 Content Coherence — Vision Check (Qwen 3.5-VL)
+#### 7.2 Content Coherence — Vision Check (Qwen 3.5-27B)
 - **Extract 1 keyframe per scene** from the FINAL assembled video
-- **Qwen 3.5-VL analyzes** keyframes + narration transcript together:
+- **Qwen 3.5-27B analyzes** keyframes + narration transcript together:
   - Does each frame match its narration?
   - Are **Arabic text overlays** readable, correctly positioned, properly timed?
   - Is the intro/outro present and branded correctly?
@@ -3476,7 +3476,7 @@ channels:
 |-----------|-----------|
 | **Orchestrator** | Python 3.11+ (main pipeline controller) |
 | **LLM (Script + QA)** | Qwen 3.5 (Q4, local via Ollama) — strong Arabic, used for ALL tasks: script writing, review, SEO, compliance, splitting |
-| **Vision LLM (Phase 6)** | LLaVA / Llama 3.2 Vision (local) or API |
+| **Vision LLM (Phase 6)** | LLaVA / Qwen 3.5-27B (unified vision) (local) or API |
 | **Image Gen** | ComfyUI + FLUX.1-dev |
 | **Video Gen** | ComfyUI + LTX-2.3 |
 | **Voice Cloning + TTS** | Fish Audio S2 Pro (best Arabic), fallback: OpenAudio S1 / XTTS v2 / ElevenLabs API |
@@ -3495,7 +3495,7 @@ channels:
 | Model | Size | Purpose |
 |-------|------|---------|
 | Qwen 3.5 Q4_K_M | ~42GB | ALL LLM tasks: script writing, review, SEO, compliance, splitting (strongest local Arabic model) |
-| Llama 3.2 Vision 11B | ~7GB | Visual QA (Phase 6) |
+| Qwen 3.5-27B (unified vision) | ~7GB | Visual QA (Phase 6) |
 | FLUX.1-dev | ~12GB | Image generation |
 | LTX-2.3 | ~8GB | Video generation (image-to-video with realistic motion) |
 | Fish Audio S2 Pro | ~2GB | Arabic voice cloning + TTS (best open-source Arabic clone quality) |
@@ -3770,7 +3770,7 @@ ai-video-factory/
 - [ ] Set up Python project structure
 - [ ] Install ComfyUI + FLUX + LTX-2.3
 - [ ] Install Fish Audio S2 Pro + ACE-Step 1.5 + AudioCraft
-- [ ] Install Ollama + Qwen 3.5 + Llama 3.2 Vision
+- [ ] Install Ollama + Qwen 3.5 + Qwen 3.5-27B (unified vision)
 - [ ] Build basic scene JSON schema
 - [ ] Build FFmpeg composer (core assembly)
 - [ ] Test: manual script → images → video → voice → composed video
@@ -4081,7 +4081,7 @@ ai-video-factory/
   - ✅ Best zones: top-third, center, right-center
   - Max 3-5 Arabic words (large, bold, readable at mobile size)
   - High contrast: white text + dark stroke, or colored text + blur background
-- **Vision LLM check:** After thumbnail generation, Llama 3.2 Vision verifies:
+- **Vision LLM check:** After thumbnail generation, Qwen 3.5-27B (unified vision) verifies:
   - Is the text readable at 320x180 (mobile thumbnail size)?
   - Does the text overlap with YouTube UI elements?
   - Is the composition eye-catching?
