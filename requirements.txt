@@ -1,0 +1,53 @@
+# ═══ Core ═══
+pyyaml>=6.0
+pydantic>=2.0
+python-dotenv>=1.0
+apscheduler>=3.10
+
+# ═══ Database ═══
+# sqlite3 is built-in
+
+# ═══ LLM ═══
+ollama>=0.3               # Ollama Python client
+requests>=2.31            # For ComfyUI API
+
+# ═══ YouTube ═══
+google-api-python-client>=2.100
+google-auth-oauthlib>=1.1
+yt-dlp>=2024.1            # Metadata extraction only
+
+# ═══ Trends & Research ═══
+pytrends>=4.9             # Google Trends
+feedparser>=6.0           # RSS feeds
+praw>=7.7                 # Reddit API (optional)
+
+# ═══ AI Models ═══
+torch>=2.1
+torchaudio>=2.1
+transformers>=4.36
+audiocraft>=1.3           # ACE-Step 1.5 + MOSS-SoundEffect
+# fish-audio-s2-pro       # Install separately from GitHub
+
+# ═══ Image/Video Processing ═══
+Pillow>=10.0              # Arabic text rendering
+moviepy>=1.0              # Video editing helper
+numpy>=1.24
+
+# ═══ Audio Processing ═══
+librosa>=0.10             # Spectral analysis (Content ID)
+noisereduce>=3.0          # Voice recording denoising
+soundfile>=0.12
+chromaprint               # Audio fingerprinting (optional)
+
+# ═══ Upscaling ═══
+realesrgan>=0.3           # 4K upscaling (CPU)
+
+# ═══ Telegram ═══
+python-telegram-bot>=20.0
+
+# ═══ Logging ═══
+rich>=13.0                # Pretty console output
+
+# ═══ Testing ═══
+pytest>=7.0
+pytest-asyncio>=0.21

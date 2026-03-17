@@ -1,0 +1,90 @@
+# ═══════════════════════════════════════════
+# AI Video Factory — Voice Library
+# ═══════════════════════════════════════════
+# Pre-defined Arabic voice profiles for documentary narration.
+# Each voice has a unique embedding generated from reference recordings.
+
+voice_library:
+  - id: "v_male_auth_01"
+    name: "خالد - السلطوي"
+    gender: "male"
+    age_range: [35, 50]
+    emotion_range: ["authoritative", "dramatic", "calm", "serious"]
+    quality_score: 9.2
+    language: "ar"
+    accent: "MSA"
+    description: "صوت ذكوري عميق وسلطوي، مثالي للوثائقيات الجادة والتحليلات السياسية"
+    recording_file_path: "config/voices/male_authoritative_01.wav"
+    embedding_path: "config/voices/embeddings/v_male_auth_01.pt"
+    best_for: ["documentary", "geopolitics", "history", "military"]
+    speaking_rate_wpm: 140
+    pitch_range: "low"
+
+  - id: "v_male_enrg_01"
+    name: "أحمد - الحيوي"
+    gender: "male"
+    age_range: [25, 35]
+    emotion_range: ["energetic", "exciting", "hopeful", "enthusiastic"]
+    quality_score: 8.8
+    language: "ar"
+    accent: "MSA"
+    description: "صوت شاب حيوي ومتحمس، مناسب لمحتوى العلوم والتكنولوجيا"
+    recording_file_path: "config/voices/male_energetic_01.wav"
+    embedding_path: "config/voices/embeddings/v_male_enrg_01.pt"
+    best_for: ["science", "technology", "mysteries", "explainer"]
+    speaking_rate_wpm: 155
+    pitch_range: "mid"
+
+  - id: "v_male_myst_01"
+    name: "طارق - الغامض"
+    gender: "male"
+    age_range: [30, 45]
+    emotion_range: ["mysterious", "tense", "suspenseful", "dramatic"]
+    quality_score: 8.5
+    language: "ar"
+    accent: "MSA"
+    description: "صوت غامض ومشوّق، مثالي للألغاز والجرائم والمحتوى الدرامي"
+    recording_file_path: "config/voices/male_mysterious_01.wav"
+    embedding_path: "config/voices/embeddings/v_male_myst_01.pt"
+    best_for: ["mysteries", "crime", "conspiracy", "horror"]
+    speaking_rate_wpm: 130
+    pitch_range: "low-mid"
+
+  - id: "v_female_edu_01"
+    name: "نور - التعليمية"
+    gender: "female"
+    age_range: [28, 40]
+    emotion_range: ["educational", "calm", "clear", "warm"]
+    quality_score: 9.0
+    language: "ar"
+    accent: "MSA"
+    description: "صوت نسائي واضح ودافئ، مناسب للمحتوى التعليمي والثقافي"
+    recording_file_path: "config/voices/female_educational_01.wav"
+    embedding_path: "config/voices/embeddings/v_female_edu_01.pt"
+    best_for: ["culture", "education", "health", "social"]
+    speaking_rate_wpm: 145
+    pitch_range: "mid-high"
+
+  - id: "v_male_narr_01"
+    name: "يوسف - الراوي"
+    gender: "male"
+    age_range: [30, 45]
+    emotion_range: ["storytelling", "warm", "reflective", "engaging"]
+    quality_score: 9.5
+    language: "ar"
+    accent: "MSA"
+    description: "صوت سردي دافئ وجذاب، الأفضل للقصص والحكايات والسرد الوثائقي"
+    recording_file_path: "config/voices/male_narrator_01.wav"
+    embedding_path: "config/voices/embeddings/v_male_narr_01.pt"
+    best_for: ["storytelling", "documentary", "history", "culture"]
+    speaking_rate_wpm: 135
+    pitch_range: "mid"
+
+# ─── Voice Selection Rules ─────────────────
+selection_rules:
+  # Channel lock: if channel config specifies a voice, always use it
+  channel_override: true
+  # If no channel lock, select by content match
+  fallback_strategy: "best_match"  # "best_match" | "highest_quality" | "random"
+  # Minimum quality score to be eligible
+  min_quality_score: 7.0

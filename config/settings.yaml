@@ -1,0 +1,147 @@
+# ═══════════════════════════════════════════
+# AI Video Factory — Global Configuration
+# ═══════════════════════════════════════════
+
+factory:
+  name: "AI Video Factory"
+  version: "1.0.0"
+  timezone: "Asia/Baghdad"
+  language: "ar"
+
+# ─── Hardware ──────────────────────────────
+gpu:
+  device: "cuda:0"
+  vram_gb: 24
+  safety_margin_gb: 2
+  max_temperature_c: 85
+  monitor_interval_sec: 5
+
+# ─── Ollama (LLM) ─────────────────────────
+ollama:
+  host: "http://localhost:11434"
+  models:
+    script: "qwen3.5:27b"
+    vision: "qwen3.5:27b"
+  keep_alive: "0"
+  num_parallel: 1
+  timeout_sec: 600
+
+# ─── ComfyUI (Image/Video Gen) ────────────
+comfyui:
+  host: "http://localhost:8188"
+  workflows_dir: "config/comfyui_workflows/"
+  models:
+    flux: "flux1-dev.safetensors"
+    ltx: "ltx-video-2.3.safetensors"
+  loras:
+    - "middle_east_architecture.safetensors"
+    - "photojournalism.safetensors"
+    - "cinematic_lighting.safetensors"
+
+# ─── Voice Cloning ────────────────────────
+voice:
+  engine: "fish_audio_s2_pro"
+  model_path: "models/fish_audio_s2_pro"
+  fallback_engine: "elevenlabs"
+  elevenlabs_api_key: "${ELEVENLABS_API_KEY}"
+
+# ─── Audio Generation ─────────────────────
+audio:
+  music_model: "facebook/ace-step-1.5"
+  sfx_model: "facebook/moss-soundeffect"
+  sample_rate: 44100
+  music_temperature: 0.9
+
+# ─── Content ID Protection ────────────────
+content_id:
+  fingerprint_db: "data/audio_fingerprints.db"
+  similarity_threshold_music: 0.15
+  similarity_threshold_shorts: 0.10
+  youtube_precheck: true
+  precheck_wait_min: 15
+
+# ─── YouTube API ──────────────────────────
+youtube:
+  api_key: "${YOUTUBE_API_KEY}"
+  client_secrets_file: "config/youtube_client_secret.json"
+  quota_daily: 10000
+  quota_reserve: 3000
+
+# ─── Telegram ─────────────────────────────
+telegram:
+  bot_token: "${TELEGRAM_BOT_TOKEN}"
+  admin_chat_id: "${TELEGRAM_CHAT_ID}"
+
+# ─── Database ─────────────────────────────
+database:
+  path: "data/factory.db"
+  wal_mode: true
+  busy_timeout_ms: 5000
+
+# ─── Storage ──────────────────────────────
+storage:
+  output_dir: "output/"
+  archive_dir: "archive/"
+  max_disk_usage_gb: 500
+  emergency_free_gb: 50
+  cleanup_schedule: "0 3 * * *"
+  archive_compression: "zstd"
+  keep_versions: 2
+
+# ─── Pipeline Defaults ────────────────────
+pipeline:
+  default_target_length_min: 10
+  max_script_revisions: 3
+  max_image_regenerations: 2
+  max_voice_retries: 3
+  scene_duration_range: [5, 15]
+  image_resolution: [1920, 1080]
+  video_fps: 24
+  video_codec: "h264"
+  audio_codec: "aac"
+  audio_bitrate: "320k"
+
+# ─── Manual Review ────────────────────────
+manual_review:
+  enabled: true
+  mode: "all"              # "all" | "selective" | "off"
+  auto_publish_min_score: 8.5
+  auto_publish_after_n_videos: 20
+  sensitive_categories:
+    - "politics"
+    - "religion"
+    - "war"
+    - "terrorism"
+  timeout_hours: 24
+  timeout_action: "hold"   # "auto_publish" | "hold" | "cancel"
+
+# ─── Scheduling ───────────────────────────
+schedule:
+  daily_run_time: "06:00"
+  analytics_intervals: [24, 48, 168, 720]
+  weekly_report_day: "sunday"
+  monthly_report_day: 1
+
+# ─── Rubric Calibration ──────────────────
+rubric_calibration:
+  mode: "default"            # "default" | "calibrated" | "manual"
+  min_videos_for_calibration: 20
+  image_weights:
+    semantic_match: 0.25
+    element_presence: 0.20
+    composition: 0.15
+    style_fit: 0.10
+    artifact_severity: 0.15
+    cultural: 0.05
+    emotion: 0.10
+  calibrated_weights: null
+  calibrated_threshold: null
+  last_calibration: null
+
+# ─── Logging ──────────────────────────────
+logging:
+  level: "INFO"
+  file: "logs/pipeline/factory.log"
+  gpu_dir: "logs/gpu/"
+  max_file_size_mb: 50
+  backup_count: 5
