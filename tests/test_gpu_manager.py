@@ -179,7 +179,7 @@ class TestGPULogger:
 
         mgr = GPUMemoryManager(gpu_config)
         mgr.set_hosts("http://localhost:11434", "http://localhost:8188")
-        mgr.load_model("qwen3.5:27b", model_type="ollama", logger=mock_logger)
+        mgr.load_model("qwen3.5:27b", model_type="ollama", gpu_logger=mock_logger)
 
         mock_logger.log_model_load_start.assert_called_once()
         mock_logger.log_model_load_end.assert_called_once()

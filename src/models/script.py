@@ -19,6 +19,19 @@ class EmotionalArcPoint(BaseModel):
     intensity: float = Field(ge=1, le=10)
 
 
+class ReviewResult(BaseModel):
+    """Result of script review by ScriptReviewer."""
+    approved: bool = False
+    overall_score: float = 0.0
+    factual_accuracy: float = 0.0
+    engagement: float = 0.0
+    arabic_quality: float = 0.0
+    pacing: float = 0.0
+    notes: str = ""
+    issues: list[str] = Field(default_factory=list)
+    suggestions: list[str] = Field(default_factory=list)
+
+
 class Script(BaseModel):
     id: Optional[int] = None
     job_id: str

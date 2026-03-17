@@ -33,6 +33,83 @@ logger = logging.getLogger(__name__)
 # ANIMATION STYLES
 # ════════════════════════════════════════════════════════════════
 
+class FontCategory(str, Enum):
+    """Font category — selected per video based on topic/mood."""
+    FORMAL_NEWS     = "formal_news"
+    DRAMATIC        = "dramatic"
+    HISTORICAL      = "historical"
+    MODERN_TECH     = "modern_tech"
+    ISLAMIC         = "islamic"
+    MILITARY        = "military"
+    EDITORIAL       = "editorial"
+    STORYTELLING    = "storytelling"
+
+
+# Font library — curated Arabic fonts (all free/open-source)
+FONT_LIBRARY = {
+    FontCategory.FORMAL_NEWS: {
+        "primary": "IBM Plex Sans Arabic",
+        "accent": "Noto Naskh Arabic",
+        "fallback": "Cairo",
+        "weight_range": [400, 700],
+    },
+    FontCategory.DRAMATIC: {
+        "primary": "Aref Ruqaa",
+        "accent": "Lemonada",
+        "fallback": "Tajawal",
+        "weight_range": [700, 900],
+    },
+    FontCategory.HISTORICAL: {
+        "primary": "Amiri",
+        "accent": "Scheherazade New",
+        "fallback": "Noto Naskh Arabic",
+        "weight_range": [400, 700],
+    },
+    FontCategory.MODERN_TECH: {
+        "primary": "IBM Plex Sans Arabic",
+        "accent": "Readex Pro",
+        "fallback": "Cairo",
+        "weight_range": [300, 600],
+    },
+    FontCategory.ISLAMIC: {
+        "primary": "Scheherazade New",
+        "accent": "Amiri",
+        "fallback": "Amiri",
+        "weight_range": [400, 700],
+    },
+    FontCategory.MILITARY: {
+        "primary": "Cairo",
+        "accent": "El Messiri",
+        "fallback": "Tajawal",
+        "weight_range": [600, 900],
+    },
+    FontCategory.EDITORIAL: {
+        "primary": "Tajawal",
+        "accent": "Cairo",
+        "fallback": "Noto Sans Arabic",
+        "weight_range": [400, 700],
+    },
+    FontCategory.STORYTELLING: {
+        "primary": "Lemonada",
+        "accent": "Aref Ruqaa",
+        "fallback": "Cairo",
+        "weight_range": [400, 700],
+    },
+}
+
+# Animation presets per font category
+ANIMATION_PRESETS = {
+    FontCategory.FORMAL_NEWS:  {"style": "fade_in", "duration": 0.5, "easing": "ease_out"},
+    FontCategory.DRAMATIC:     {"style": "slide_right", "duration": 0.7, "easing": "ease_in_out"},
+    FontCategory.HISTORICAL:   {"style": "fade_in", "duration": 0.8, "easing": "ease_out"},
+    FontCategory.MODERN_TECH:  {"style": "typewriter", "duration": 0.6, "easing": "linear"},
+    FontCategory.ISLAMIC:      {"style": "fade_in", "duration": 1.0, "easing": "ease_out"},
+    FontCategory.MILITARY:     {"style": "glitch", "duration": 0.4, "easing": "linear"},
+    FontCategory.EDITORIAL:    {"style": "slide_right", "duration": 0.5, "easing": "ease_out"},
+    FontCategory.STORYTELLING: {"style": "fade_in", "duration": 0.7, "easing": "ease_in_out"},
+}
+
+
 class AnimationStyle(str, Enum):
     FADE_IN       = "fade_in"
     FADE_OUT      = "fade_out"

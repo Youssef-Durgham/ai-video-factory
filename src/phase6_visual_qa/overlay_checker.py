@@ -18,9 +18,18 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-import cv2
-import numpy as np
-import requests
+try:
+    import cv2
+except ImportError:
+    cv2 = None  # Optional: install opencv-python
+try:
+    import numpy as np
+except ImportError:
+    np = None
+try:
+    import requests
+except ImportError:
+    requests = None
 
 logger = logging.getLogger(__name__)
 
