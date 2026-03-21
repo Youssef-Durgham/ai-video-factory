@@ -111,7 +111,8 @@ class AudioCoordinator:
         job = self.db.get_job(job_id)
         scenes = self.db.get_scenes(job_id)
         channel_id = job.get("channel_id", "")
-        output_dir = str(Path(self.config.output_base) / job_id / "audio" / "voice")
+        # Composer reads voice from output/{job_id}/voice/ — match that path
+        output_dir = str(Path(self.config.output_base) / job_id / "voice")
 
         # Select voice
         channel = self.db.get_channel(channel_id) if channel_id else {}
@@ -119,10 +120,6 @@ class AudioCoordinator:
             job=job, channel=channel or {},
         )
         logger.info(f"Selected voice: {voice_id}")
-
-        # Load voice embedding
-        if embedding_path:
-            self.voice_gen.load_voice(voice_id, embedding_path)
 
         # Generate for each scene
         failed_scenes = []
@@ -132,7 +129,6 @@ class AudioCoordinator:
             if not text.strip():
                 continue
 
-            emotion = scene.get("voice_emotion", "calm")
             success = False
 
             for attempt in range(self.config.max_voice_retries):
@@ -140,7 +136,7 @@ class AudioCoordinator:
                     text=text,
                     output_dir=output_dir,
                     filename=f"scene_{idx:03d}",
-                    emotion=emotion,
+                    voice_id=voice_id,
                 )
 
                 if result.success:

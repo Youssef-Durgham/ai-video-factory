@@ -170,16 +170,14 @@ class SFXGenerator:
         try:
             from audiocraft.models import AudioGen
 
-            logger.info(f"Loading AudioGen from {self.config.model_name}...")
-            self._model = AudioGen.get_pretrained(self.config.model_name)
-
-            # Move to GPU
+            # AudioGen must be loaded directly on target device (no .to() method)
             device = self.config.device
             if device == "cuda" and not torch.cuda.is_available():
                 device = "cpu"
                 logger.warning("CUDA not available, falling back to CPU")
 
-            self._model.to(device)
+            logger.info(f"Loading AudioGen from {self.config.model_name} on {device}...")
+            self._model = AudioGen.get_pretrained(self.config.model_name, device=device)
 
             # Set generation params
             self._model.set_generation_params(
@@ -209,6 +207,12 @@ class SFXGenerator:
         """Unload AudioGen model and free GPU memory."""
         if self._model is not None:
             logger.info("Unloading AudioGen model...")
+            # AudioGen stores sub-models — delete them explicitly
+            for attr in ["lm", "compression_model"]:
+                if hasattr(self._model, attr):
+                    sub = getattr(self._model, attr)
+                    if sub is not None:
+                        del sub
             del self._model
             self._model = None
             self._model_loaded = False
