@@ -26,17 +26,19 @@ GPU_REQUIREMENTS: dict[str, Optional[str]] = {
     "script":        "qwen3.5:27b",
     "compliance":    "qwen3.5:27b",
     "images":        "flux",
-    "image_qa":      "qwen3.5-27b:vision",
+    "image_qa":      "qwen3.5:27b",
     "image_regen":   "flux",
-    "video":         "ltx",
-    "video_qa":      "qwen3.5-27b:vision",
-    "video_regen":   "ltx",
+    # Audio BEFORE video — voice determines video duration
     "voice":         "fish_audio_s2_pro",
-    "music":         "ace_step_1.5",
-    "sfx":           "moss_soundeffect",
+    "music":         None,                  # ACE-Step loaded directly by music_gen.py
+    "sfx":           None,                  # AudioGen loaded directly by sfx_gen.py
+    # Video AFTER audio — matches voice duration
+    "video":         "ltx",
+    "video_qa":      "qwen3.5:27b",
+    "video_regen":   "ltx",
     "compose":       None,                  # CPU only (FFmpeg)
-    "overlay_qa":    "qwen3.5-27b:vision",
-    "final_qa":      "qwen3.5-27b:vision",
+    "overlay_qa":    "qwen3.5:27b",
+    "final_qa":      "qwen3.5:27b",
     "manual_review": None,                  # Waiting for human
     "publish":       "flux",                # Thumbnails
 }
@@ -44,10 +46,12 @@ GPU_REQUIREMENTS: dict[str, Optional[str]] = {
 # ═══ Consecutive states using the SAME model (batch without unload) ═══
 # If current and next status are in the same batch, skip the swap.
 GPU_BATCHES: list[list[str]] = [
-    ["research", "seo", "script", "compliance"],       # All Qwen 3.5
-    ["image_qa", "video_qa", "overlay_qa", "final_qa"],  # All Qwen Vision
+    ["research", "seo", "script", "compliance"],                  # All Qwen 3.5
+    ["image_qa", "video_qa", "overlay_qa", "final_qa"],            # All Qwen 3.5 (vision)
     ["images", "image_regen"],                          # Both FLUX
     ["video", "video_regen"],                           # Both LTX
+    # Audio phases are sequential but each uses a different model
+    # (fish → ace → moss) — no batching possible
 ]
 
 
