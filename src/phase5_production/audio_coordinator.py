@@ -56,9 +56,7 @@ class AudioCoordinator:
             min_quality_score=self.config.voice_min_quality,
         ))
         self.voice_selector = VoiceSelector(db=db)
-        self.music_gen = MusicGenerator(MusicGenConfig(
-            model_name=self.config.music_model,
-        ))
+        self.music_gen = MusicGenerator(MusicGenConfig())
         self.sfx_gen = SFXGenerator(SFXGenConfig())
         self.content_id_guard = (
             ContentIDGuard(ContentIDConfig())
@@ -270,10 +268,11 @@ class AudioCoordinator:
         Generate sound effects for scenes that have SFX tags.
 
         Steps:
-        1. Load SFX model (MOSS-SoundEffect)
-        2. Generate per-scene SFX from tags
+        1. Load AudioGen model onto GPU (after clearing VRAM)
+        2. Generate per-scene SFX from tags using AI
         3. Fall back to pre-downloaded SFX library if generation fails
         4. Store paths in DB
+        5. Unload model to free GPU
         """
         start = time.time()
         scenes = self.db.get_scenes(job_id)
@@ -287,39 +286,47 @@ class AudioCoordinator:
             logger.info("No scenes require SFX generation")
             return PhaseResult(success=True, reason="No SFX needed")
 
-        failed_scenes = []
-        for scene in scenes_with_sfx:
-            idx = scene["scene_index"]
-            sfx_tags = scene.get("sfx_tags", [])
-            if isinstance(sfx_tags, str):
-                import json
-                try:
-                    sfx_tags = json.loads(sfx_tags)
-                except Exception:
-                    sfx_tags = [sfx_tags]
+        try:
+            failed_scenes = []
+            for scene in scenes_with_sfx:
+                idx = scene["scene_index"]
+                sfx_tags = scene.get("sfx_tags", [])
+                if isinstance(sfx_tags, str):
+                    import json
+                    try:
+                        sfx_tags = json.loads(sfx_tags)
+                    except Exception:
+                        sfx_tags = [sfx_tags]
 
-            sfx_description = scene.get("sfx_description", "")
+                sfx_description = scene.get("sfx_description", "")
+                duration = scene.get("duration_sec", 6.0) or 6.0
 
-            # Generate each SFX for this scene
-            scene_sfx_paths = []
-            for j, tag in enumerate(sfx_tags):
-                result = self.sfx_gen.generate(
-                    description=tag if isinstance(tag, str) else sfx_description,
-                    output_dir=output_dir,
-                    filename=f"scene_{idx:03d}_sfx_{j:02d}",
-                )
+                # Generate each SFX for this scene
+                scene_sfx_paths = []
+                for j, tag in enumerate(sfx_tags):
+                    result = self.sfx_gen.generate(
+                        description=tag if isinstance(tag, str) else sfx_description,
+                        sfx_tags=[tag] if isinstance(tag, str) else sfx_tags,
+                        duration_sec=float(duration),
+                        output_dir=output_dir,
+                        filename=f"scene_{idx:03d}_sfx_{j:02d}",
+                    )
 
-                if result.success and result.audio_path:
-                    scene_sfx_paths.append(result.audio_path)
-                else:
-                    logger.warning(f"SFX gen failed for scene {idx} tag '{tag}'")
+                    if result.success and result.audio_path:
+                        scene_sfx_paths.append(result.audio_path)
+                    else:
+                        logger.warning(f"SFX gen failed for scene {idx} tag '{tag}'")
 
-            if scene_sfx_paths:
-                self.db.update_scene_asset(
-                    job_id, idx, sfx_paths=scene_sfx_paths,
-                )
-            elif sfx_tags:
-                failed_scenes.append(idx)
+                if scene_sfx_paths:
+                    self.db.update_scene_asset(
+                        job_id, idx, sfx_paths=scene_sfx_paths,
+                    )
+                elif sfx_tags:
+                    failed_scenes.append(idx)
+
+        finally:
+            # Always unload to free GPU for next model
+            self.sfx_gen.unload_model()
 
         elapsed = round(time.time() - start, 2)
         total = len(scenes_with_sfx)
