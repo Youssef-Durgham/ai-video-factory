@@ -608,6 +608,10 @@ class FactoryDB:
     # ─── Scene Management ──────────────────────────────
 
     def save_scenes(self, job_id: str, scenes: list[dict]):
+        # Delete existing scenes first to prevent duplicates
+        # (compliance auto-fix and script revisions call this again)
+        self.conn.execute("DELETE FROM scenes WHERE job_id = ?", (job_id,))
+
         for i, scene in enumerate(scenes):
             self.conn.execute("""
                 INSERT INTO scenes (job_id, scene_index, narration_text, duration_sec,
