@@ -1093,11 +1093,25 @@ class VoicePhase(BasePhase):
             if i % 5 == 0:
                 _notify(f"🎙️ تعليق {i + 1}/{total}...")
 
+            # Detect mood from scene data for mood-specific voice reference
+            scene_mood = scene.get("music_mood", "")
+            voice_mood = None
+            if scene_mood:
+                mood_lower = scene_mood.lower()
+                if any(w in mood_lower for w in ["dramatic", "tense", "epic", "mystery"]):
+                    voice_mood = "dramatic"
+                elif any(w in mood_lower for w in ["calm", "peaceful", "sad"]):
+                    voice_mood = "calm"
+            # Questions get question mood
+            if narration.strip().endswith("؟"):
+                voice_mood = "question"
+
             result = gen.generate(
                 text=narration,
                 output_dir=output_dir,
                 filename=f"scene_{idx:03d}",
                 voice_id=voice_id,
+                mood=voice_mood,
             )
             results.append(result)
 

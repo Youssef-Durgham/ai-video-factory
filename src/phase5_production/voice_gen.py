@@ -186,15 +186,18 @@ class VoiceGenerator:
         output_dir: str,
         filename: str = "voice",
         voice_id: Optional[str] = None,
+        mood: Optional[str] = None,
+        **kwargs,
     ) -> VoiceGenResult:
         """
-        Generate voice audio for text. Tries Fish Speech first, then Edge TTS.
+        Generate voice audio for text using Fish Speech.
 
         Args:
             text: Narration text (Arabic).
             output_dir: Directory to save output MP3.
             filename: Output filename (without extension).
-            voice_id: Optional voice profile ID for voice cloning.
+            voice_id: Voice profile ID for voice cloning.
+            mood: Scene mood (calm/dramatic/question) → selects matching reference.
 
         Returns:
             VoiceGenResult with path to generated audio.
@@ -202,12 +205,33 @@ class VoiceGenerator:
         Path(output_dir).mkdir(parents=True, exist_ok=True)
         mp3_path = str(Path(output_dir) / f"{filename}.mp3")
 
-        # Resolve voice profile
+        # Resolve voice profile — use mood-specific reference if available
         voice_profile = None
         if voice_id:
             from src.phase5_production.voice_cloner import VoiceCloner
             cloner = VoiceCloner()
-            voice_profile = cloner.get_voice(voice_id)
+
+            # Try mood-specific reference first
+            if mood:
+                mood_ref = cloner.get_mood_reference(voice_id, mood)
+                if mood_ref:
+                    main_profile = cloner.get_voice(voice_id)
+                    if main_profile:
+                        from src.phase5_production.voice_cloner import VoiceProfile
+                        voice_profile = VoiceProfile(
+                            voice_id=voice_id,
+                            name=main_profile.name,
+                            reference_audio=mood_ref,
+                            source_url=main_profile.source_url,
+                            created_at=main_profile.created_at,
+                            duration_sec=main_profile.duration_sec,
+                        )
+                        logger.info(f"Using mood '{mood}' reference for voice '{voice_id}'")
+
+            # Fallback to main reference
+            if not voice_profile:
+                voice_profile = cloner.get_voice(voice_id)
+
             if not voice_profile:
                 logger.warning(f"Voice profile '{voice_id}' not found, using default")
         elif not voice_id:
