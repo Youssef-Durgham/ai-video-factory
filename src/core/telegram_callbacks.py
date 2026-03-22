@@ -224,10 +224,20 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             job_id = data[4:]
             await _job_goto_menu(query, job_id)
         elif data.startswith("jg_"):
-            # Format: jg_{job_id}_{phase}
-            last_underscore = data.rfind("_")
-            phase = data[last_underscore + 1:]
-            job_id = data[3:last_underscore]
+            # Format: jg_{job_id}_{phase} — job_id is like "job_20260320_005207"
+            # Phase names may contain underscores (image_qa, video_qa, etc.)
+            # Job ID format: job_YYYYMMDD_HHMMSS (always 3 parts with "job" prefix)
+            rest = data[3:]  # after "jg_"
+            # Job ID = first 3 underscore-separated parts (job_DATE_TIME)
+            parts = rest.split("_")
+            if len(parts) >= 4 and parts[0] == "job":
+                job_id = "_".join(parts[0:3])  # job_20260320_005207
+                phase = "_".join(parts[3:])     # image_qa, manual_review, etc.
+            else:
+                # Fallback
+                last_underscore = rest.rfind("_")
+                phase = rest[last_underscore + 1:]
+                job_id = rest[:last_underscore]
             await _job_goto(query, job_id, phase)
         elif data.startswith("jsc_"):
             job_id = data[4:]
