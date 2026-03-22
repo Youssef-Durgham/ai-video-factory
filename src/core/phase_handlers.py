@@ -1286,13 +1286,143 @@ class ImageQAPhase(BasePhase):
             f"{fail_count} fail out of {total} ({pass_rate:.0%})"
         )
 
-        # Continue even if < 80% pass — don't block
+        # ── Auto-regenerate failed images (up to 2 retries) ──
+        failed_indices = [r.scene_index for r in results if r.verdict in ("REGEN", "FAIL")]
+        max_regen_rounds = 2
+
+        if failed_indices:
+            from src.phase5_production.image_gen import ImageGenerator, ImageGenConfig
+            img_config = ImageGenConfig(
+                comfyui_host="http://127.0.0.1:8000",
+                model_name="flux1-dev-fp8.safetensors",
+                width=1280, height=720, steps=20, cfg=1.0,
+                sampler="euler", scheduler="normal", timeout_sec=300,
+            )
+            img_gen = ImageGenerator(img_config)
+            images_dir_path = Path(images_dir)
+
+            for regen_round in range(max_regen_rounds):
+                if not failed_indices:
+                    break
+
+                _notify(f"🔄 إعادة توليد {len(failed_indices)} صورة (محاولة {regen_round + 1}/{max_regen_rounds})...")
+                logger.info(f"Regenerating {len(failed_indices)} images (round {regen_round + 1})")
+
+                # Ensure ComfyUI is running
+                if not img_gen.ensure_server(max_wait=120):
+                    logger.warning("ComfyUI not available for regen")
+                    break
+
+                still_failed = []
+                for idx in failed_indices:
+                    scene = next((s for s in scenes if s.get("scene_index") == idx), None)
+                    if not scene:
+                        continue
+
+                    prompt = scene.get("visual_prompt", "")
+                    if not prompt.strip():
+                        still_failed.append(idx)
+                        continue
+
+                    result = img_gen.generate(
+                        prompt=prompt, output_dir=images_dir,
+                        filename=f"scene_{idx:03d}", width=1280, height=720,
+                    )
+
+                    if result.success and result.image_path:
+                        self.db.update_scene_asset(job_id, idx,
+                            image_path=result.image_path, image_seed=result.seed)
+
+                        # Re-QA the regenerated image
+                        qa_result = qa.check_image(image_path=result.image_path, scene_index=idx)
+                        self.db.update_scene_asset(job_id, idx, image_score=qa_result.weighted_score)
+
+                        icon = {"PASS": "✅", "REGEN": "🔄", "FAIL": "❌"}.get(qa_result.verdict, "❓")
+                        _notify(f"🔄 صورة {idx} — {icon} {qa_result.weighted_score:.1f}/10")
+
+                        if qa_result.verdict in ("REGEN", "FAIL"):
+                            still_failed.append(idx)
+                        else:
+                            pass_count += 1
+                    else:
+                        still_failed.append(idx)
+
+                failed_indices = still_failed
+
+            # Update counts
+            regen_count = len(failed_indices)
+            pass_rate = (total - regen_count) / max(total, 1)
+            score = pass_rate * 10.0
+
+        # ── Send all images to Telegram for user approval ──
+        _notify(f"📊 فحص الصور: {total - len(failed_indices)}/{total} نجحت — إرسال للمراجعة...")
+        self._send_images_for_review(job_id, scenes, images_dir, failed_indices)
+
         return PhaseResult(
-            success=True, score=score,
-            reason=f"{pass_count}/{total} passed" + (
-                f" — {regen_count + fail_count} need regen" if pass_rate < 0.8 else ""
-            ),
+            success=False, blocked=True,
+            reason="⏸️ بانتظار مراجعة الصور",
+            score=score,
         )
+
+    def _send_images_for_review(self, job_id, scenes, images_dir, failed_indices):
+        """Send all images to Telegram with approve/reject buttons per image."""
+        import requests as req
+        import os, time
+
+        bot_token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+        chat_id = os.environ.get("TELEGRAM_CHAT_ID", "")
+        if not bot_token or not chat_id:
+            tg = self.config.get("settings", {}).get("telegram", {})
+            bot_token = bot_token or tg.get("bot_token", "")
+            chat_id = chat_id or tg.get("admin_chat_id") or tg.get("chat_id", "")
+
+        if not bot_token or not chat_id:
+            logger.warning("No Telegram credentials for image review")
+            return
+
+        api = f"https://api.telegram.org/bot{bot_token}"
+
+        for scene in scenes:
+            idx = scene.get("scene_index", 0)
+            img_path = scene.get("image_path") or str(Path(images_dir) / f"scene_{idx:03d}.png")
+            if not Path(img_path).exists():
+                continue
+
+            narration = (scene.get("narration_text") or "")[:200]
+            failed = idx in failed_indices
+            status = "⚠️ لم تنجح بالفحص" if failed else "✅ نجحت"
+
+            caption = f"<b>مشهد {idx + 1}/{len(scenes)}</b> | {status}\n\n📝 {narration}"
+            if len(caption) > 1024:
+                caption = caption[:1020] + "..."
+
+            keyboard = json.dumps({"inline_keyboard": [[
+                {"text": "✅ موافق", "callback_data": f"ia_{job_id}_{idx}"},
+                {"text": "🔄 إعادة", "callback_data": f"ir_{job_id}_{idx}"},
+            ]]})
+
+            try:
+                with open(img_path, "rb") as f:
+                    req.post(f"{api}/sendPhoto", data={
+                        "chat_id": chat_id,
+                        "caption": caption,
+                        "parse_mode": "HTML",
+                        "reply_markup": keyboard,
+                    }, files={"photo": (Path(img_path).name, f, "image/png")}, timeout=30)
+            except Exception as e:
+                logger.warning(f"Failed to send image {idx}: {e}")
+
+            time.sleep(0.3)
+
+        # Final approve-all button
+        req.post(f"{api}/sendMessage", json={
+            "chat_id": chat_id, "parse_mode": "HTML",
+            "text": f"📸 <b>مراجعة الصور — {len(scenes)} مشهد</b>\n\n"
+                    f"راجع كل صورة ثم اضغط:",
+            "reply_markup": {"inline_keyboard": [
+                [{"text": "✅ موافقة على الكل", "callback_data": f"iaa_{job_id}"}],
+            ]},
+        }, timeout=10)
 
 
 class ImageRegenPhase(_PassthroughPhase):
