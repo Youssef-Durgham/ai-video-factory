@@ -76,7 +76,7 @@ class VoiceProfile:
     source_url: str
     created_at: str
     duration_sec: float
-    category: str = "documentary"  # Default category
+    category: str = "documentary"  # Comma-separated if multiple: "documentary,educational"
 
 
 class VoiceCloner:
@@ -606,8 +606,13 @@ class VoiceCloner:
         return profiles
 
     def list_voices_by_category(self, category: str) -> list[VoiceProfile]:
-        """List voices filtered by category."""
-        return [v for v in self.list_voices() if v.category == category]
+        """List voices that match a category. Supports multi-category (comma-separated)."""
+        result = []
+        for v in self.list_voices():
+            voice_cats = set(v.category.split(","))
+            if category in voice_cats:
+                result.append(v)
+        return result
 
     def get_voice(self, voice_id: str) -> Optional[VoiceProfile]:
         meta_path = self.VOICES_DIR / f"{voice_id}.json"

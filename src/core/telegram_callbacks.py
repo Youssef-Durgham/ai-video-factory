@@ -323,18 +323,48 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif data.startswith("noop_"):
             pass  # Do nothing
 
-        # Voice category selection (during clone flow)
-        elif data.startswith("vcat_"):
-            cat = data[5:]
-            context.user_data["voice_clone_category"] = cat
+        # Voice category toggle/confirm (during clone flow)
+        elif data == "vcat_confirm":
+            # Confirm selection → move to ID step
+            selected = context.user_data.get("voice_clone_categories", [])
+            if not selected:
+                selected = ["documentary"]  # Default
+            context.user_data["voice_clone_category"] = ",".join(selected)
             context.user_data["voice_clone_state"] = "awaiting_id"
             from src.phase5_production.voice_cloner import VOICE_CATEGORIES
-            cat_label = VOICE_CATEGORIES.get(cat, cat)
+            labels = [VOICE_CATEGORIES.get(c, c) for c in selected]
             await query.edit_message_text(
-                f"✅ النوع: {cat_label}\n\n"
+                f"✅ الأنواع: {' | '.join(labels)}\n\n"
                 "🔤 اختر معرّف للصوت (بالإنجليزي، بدون مسافات):\n"
                 '<i>مثال: narrator_ahmed</i>',
                 parse_mode="HTML",
+            )
+        elif data.startswith("vcat_"):
+            # Toggle category selection
+            cat = data[5:]
+            selected = context.user_data.get("voice_clone_categories", [])
+            if cat in selected:
+                selected.remove(cat)
+            else:
+                selected.append(cat)
+            context.user_data["voice_clone_categories"] = selected
+
+            # Rebuild buttons with toggle state
+            from src.phase5_production.voice_cloner import VOICE_CATEGORIES
+            buttons = []
+            for cat_id, cat_label in VOICE_CATEGORIES.items():
+                icon = "✅" if cat_id in selected else "⬜"
+                buttons.append([InlineKeyboardButton(f"{icon} {cat_label}", callback_data=f"vcat_{cat_id}")])
+            count = len(selected)
+            buttons.append([InlineKeyboardButton(
+                f"✅ تأكيد ({count} مختار)" if count else "✅ تأكيد الاختيار",
+                callback_data="vcat_confirm"
+            )])
+            await query.edit_message_text(
+                f"🎭 <b>اختر أنواع المحتوى لهذا الصوت:</b>\n"
+                f"<i>اضغط على الأنواع المناسبة ثم اضغط تأكيد</i>",
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup(buttons),
             )
 
         # Voice management callbacks
@@ -1883,16 +1913,18 @@ async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
 
     if user_data.get("voice_clone_state") == "awaiting_name":
         user_data["voice_clone_name"] = update.message.text.strip()
-        user_data["voice_clone_state"] = "awaiting_category"
+        user_data["voice_clone_state"] = "selecting_categories"
+        user_data["voice_clone_categories"] = []
 
-        # Show category selection buttons
         from src.phase5_production.voice_cloner import VOICE_CATEGORIES
         buttons = []
         for cat_id, cat_label in VOICE_CATEGORIES.items():
-            buttons.append([InlineKeyboardButton(cat_label, callback_data=f"vcat_{cat_id}")])
+            buttons.append([InlineKeyboardButton(f"⬜ {cat_label}", callback_data=f"vcat_{cat_id}")])
+        buttons.append([InlineKeyboardButton("✅ تأكيد الاختيار", callback_data="vcat_confirm")])
 
         await update.message.reply_text(
-            "✅ تم.\n\n🎭 <b>اختر نوع المحتوى لهذا الصوت:</b>",
+            "✅ تم.\n\n🎭 <b>اختر أنواع المحتوى لهذا الصوت:</b>\n"
+            "<i>اضغط على الأنواع المناسبة ثم اضغط تأكيد</i>",
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(buttons),
         )
