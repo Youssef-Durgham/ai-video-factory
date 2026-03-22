@@ -1,5 +1,18 @@
 """
 AI Video Factory — Main Entry Point.
+"""
+import sys, os
+# Fix Windows cp1252 encoding for Unicode arrows/emojis in logs
+if sys.platform == "win32":
+    os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+    for stream_name in ("stdout", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        if stream and hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
+"""
 
 Initializes all components, wires up the event system,
 starts the QueueRunner, and handles graceful shutdown.
@@ -67,7 +80,7 @@ class Factory:
         from src.core.telegram_bot import TelegramBot
         from src.core.watchdog import ServiceWatchdog
         from src.core.scheduler import FactoryScheduler
-        from src.core.db_backup import DBBackup
+        from src.core.db_backup import DatabaseBackup as DBBackup
 
         # Load config
         self.config = load_config()
@@ -97,17 +110,19 @@ class Factory:
 
         # Job queue
         self.queue = JobQueue(self.db)
-        self.queue_runner = QueueRunner()
-        self.queue_runner.queue = self.queue
-        self.queue_runner.pipeline = self.pipeline
+        self.queue_runner = QueueRunner(
+            queue=self.queue,
+            pipeline=self.pipeline,
+            event_bus=self.event_bus,
+        )
         logger.info("Job queue + runner ready")
 
-        # Watchdog
-        self.watchdog = ServiceWatchdog(self.db, self.telegram)
-        logger.info("Service watchdog initialized")
+        # Watchdog (disabled — false positives during model loading)
+        self.watchdog = None
+        logger.info("Service watchdog DISABLED (fix pending)")
 
         # Scheduler
-        self.scheduler = FactoryScheduler(self.db, self.telegram)
+        self.scheduler = FactoryScheduler(settings)
         self._setup_scheduled_jobs(settings)
         logger.info("Scheduler configured")
 
@@ -120,32 +135,34 @@ class Factory:
 
     def _setup_scheduled_jobs(self, settings):
         """Configure scheduled/cron jobs."""
-        from src.core.db_backup import DBBackup
+        from src.core.db_backup import DatabaseBackup as DBBackup
 
         # Daily content calendar generation
         daily_time = settings.get("schedule", {}).get("daily_run_time", "06:00")
-        self.scheduler.add_daily("content_calendar", daily_time, self._run_content_calendar)
+        daily_h, daily_m = (int(x) for x in daily_time.split(":"))
+        self.scheduler.add_cron("content_calendar", self._run_content_calendar, hour=daily_h, minute=daily_m)
 
         # DB backup every 6 hours
-        self.scheduler.add_interval("db_backup", hours=6, func=self._run_backup)
+        self.scheduler.add_interval("db_backup", self._run_backup, hours=6)
 
         # Analytics collection at configured intervals
         analytics_intervals = settings.get("schedule", {}).get("analytics_intervals", [24, 48, 168, 720])
         for interval_h in analytics_intervals:
             self.scheduler.add_interval(
-                f"analytics_{interval_h}h", hours=interval_h,
-                func=lambda h=interval_h: self._run_analytics(h),
+                f"analytics_{interval_h}h",
+                lambda h=interval_h: self._run_analytics(h),
+                hours=interval_h,
             )
 
         # Competitor monitoring every 4 hours
-        self.scheduler.add_interval("competitor_check", hours=4, func=self._run_competitor_check)
+        self.scheduler.add_interval("competitor_check", self._run_competitor_check, hours=4)
 
         # Watchdog health check every 5 minutes
-        self.scheduler.add_interval("watchdog", minutes=5, func=self._run_watchdog)
+        self.scheduler.add_interval("watchdog", self._run_watchdog, minutes=5)
 
         # Weekly report
         weekly_day = settings.get("schedule", {}).get("weekly_report_day", "sunday")
-        self.scheduler.add_weekly("weekly_report", weekly_day, "09:00", self._run_weekly_report)
+        self.scheduler.add_cron("weekly_report", self._run_weekly_report, day_of_week=weekly_day[:3], hour=9, minute=0)
 
     def start(self):
         """Start the factory."""
@@ -158,9 +175,12 @@ class Factory:
         signal.signal(signal.SIGTERM, self._signal_handler)
 
         try:
-            # Start watchdog
-            self.watchdog.start()
-            logger.info("✅ Watchdog started")
+            # Start watchdog (disabled)
+            if self.watchdog:
+                self.watchdog.start()
+                logger.info("✅ Watchdog started")
+            else:
+                logger.info("⏸️ Watchdog disabled")
 
             # Start scheduler
             self.scheduler.start()
@@ -199,8 +219,9 @@ class Factory:
             logger.warning(f"Scheduler shutdown error: {e}")
 
         try:
-            self.watchdog.stop()
-            logger.info("Watchdog stopped")
+            if self.watchdog:
+                self.watchdog.stop()
+                logger.info("Watchdog stopped")
         except Exception as e:
             logger.warning(f"Watchdog shutdown error: {e}")
 
@@ -233,8 +254,19 @@ class Factory:
                     time.sleep(30)
                     continue
 
+                # Check if job is already being run by a callback thread
+                from src.core.telegram_callbacks import _running_jobs
+                if job_id in _running_jobs:
+                    logger.info(f"Job {job_id} already running via callback — skipping")
+                    time.sleep(10)
+                    continue
+
                 logger.info(f"Processing job: {job_id}")
-                result = self.pipeline.run_job(job_id)
+                _running_jobs.add(job_id)
+                try:
+                    result = self.pipeline.run_job(job_id)
+                finally:
+                    _running_jobs.discard(job_id)
 
                 if result == "paused":
                     next_job = self.queue.can_interleave(job_id)
@@ -259,7 +291,18 @@ class Factory:
         """Start Telegram bot in background."""
         try:
             import threading
-            t = threading.Thread(target=self.telegram.start_polling, daemon=True)
+
+            def _run_polling():
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                try:
+                    loop.run_until_complete(self.telegram.start_polling())
+                except Exception as e:
+                    logger.warning(f"Telegram polling error: {e}")
+                finally:
+                    loop.close()
+
+            t = threading.Thread(target=_run_polling, daemon=True)
             t.start()
         except Exception as e:
             logger.warning(f"Telegram bot start failed: {e}")
@@ -267,21 +310,23 @@ class Factory:
     def _notify_startup(self):
         """Send startup notification."""
         try:
-            import asyncio
-            asyncio.get_event_loop().run_until_complete(
+            loop = asyncio.new_event_loop()
+            loop.run_until_complete(
                 self.telegram.send("🏭 <b>AI Video Factory started</b>\n\n"
                                    f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
             )
+            loop.close()
         except Exception:
             pass
 
     def _notify_shutdown(self):
         """Send shutdown notification."""
         try:
-            import asyncio
-            asyncio.get_event_loop().run_until_complete(
+            loop = asyncio.new_event_loop()
+            loop.run_until_complete(
                 self.telegram.send("🛑 <b>AI Video Factory stopped</b>")
             )
+            loop.close()
         except Exception:
             pass
 
@@ -328,7 +373,8 @@ class Factory:
     def _run_watchdog(self):
         """Run watchdog health check."""
         try:
-            self.watchdog.check_all()
+            if self.watchdog:
+                self.watchdog.check_all()
         except Exception as e:
             logger.error(f"Watchdog error: {e}")
 
@@ -361,7 +407,7 @@ def main():
         import torch
         if torch.cuda.is_available():
             gpu_name = torch.cuda.get_device_name(0)
-            vram = torch.cuda.get_device_properties(0).total_mem / (1024**3)
+            vram = torch.cuda.get_device_properties(0).total_memory / (1024**3)
             logger.info(f"GPU: {gpu_name} ({vram:.1f} GB)")
         else:
             logger.warning("No CUDA GPU detected!")
