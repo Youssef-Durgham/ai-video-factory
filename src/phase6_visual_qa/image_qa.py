@@ -167,10 +167,23 @@ class ImageQA:
                 expected_elements=expected,
             )
             results.append(result)
+
+            verdict_icon = {"PASS": "✅", "REGEN": "🔄", "FAIL": "❌"}.get(result.verdict, "❓")
             logger.info(
                 f"Scene {idx} image QA: {result.verdict} "
                 f"(score={result.weighted_score:.1f})"
             )
+
+            # Live Telegram progress
+            try:
+                from src.core.telegram_callbacks import send_telegram_sync
+                total = len(scenes)
+                done = len(results)
+                send_telegram_sync(
+                    f"🔎 صورة {done}/{total} — {verdict_icon} {result.weighted_score:.1f}/10"
+                )
+            except Exception:
+                pass
 
         return results
 
@@ -250,21 +263,23 @@ class ImageQA:
             return None
 
         elements_str = ", ".join(expected_elements) if expected_elements else "N/A"
-        prompt = f"""You are a documentary image QA reviewer. Score this image on these 5 axes (1-10 each).
+        # /no_think disables qwen3.5 thinking mode — forces direct JSON output
+        prompt = f"""/no_think
+You are a documentary image QA reviewer. Score this image on 5 axes (1-10 each).
 
 Context:
-- Narration: {narration_text[:500]}
-- Visual prompt: {visual_prompt[:500]}
+- Narration: {narration_text[:300]}
+- Visual prompt: {visual_prompt[:300]}
 - Expected elements: {elements_str}
 
-Score each axis:
-A. Semantic Match — does the image match the narration meaning? (1=completely wrong, 10=perfect match)
-B. Visual Element Presence — are expected elements visible? (1=none present, 10=all present)
-C. Composition Quality — well-composed for a documentary? (1=terrible, 10=professional)
-D. Style Fit — looks like a documentary frame? (1=cartoon/wrong style, 10=cinematic documentary)
-E. Artifact Severity — image cleanliness (1=severe AI artifacts, 10=clean and natural)
+Axes:
+A. semantic_match: image matches narration? (1=wrong, 10=perfect)
+B. visual_elements: expected elements visible? (1=none, 10=all)
+C. composition: documentary quality? (1=bad, 10=pro)
+D. style_fit: looks documentary? (1=wrong style, 10=cinematic)
+E. artifact_severity: clean image? (1=artifacts, 10=clean)
 
-Reply ONLY with JSON:
+Reply ONLY with JSON, no explanation:
 {{"semantic_match": N, "visual_elements": N, "composition": N, "style_fit": N, "artifact_severity": N}}"""
 
         try:
@@ -283,17 +298,15 @@ Reply ONLY with JSON:
                     "stream": False,
                     "format": "json",
                     "options": {"temperature": 0.3, "num_predict": 512},
-                    "think": False,  # Disable thinking mode — we need direct JSON output
                 },
-                timeout=120,
+                timeout=180,
             )
             resp.raise_for_status()
             msg = resp.json().get("message", {})
             raw = msg.get("content", "")
-            # Qwen 3.5 uses thinking mode — content may be empty, answer in thinking
+            # Fallback: qwen3.5 thinking mode puts answer in thinking field
             if not raw.strip():
                 thinking = msg.get("thinking", "")
-                # Try to extract JSON from thinking text
                 if thinking:
                     import re
                     json_match = re.search(r'\{[^{}]*"semantic_match"[^{}]*\}', thinking)
