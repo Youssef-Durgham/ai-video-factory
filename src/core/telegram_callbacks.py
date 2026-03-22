@@ -1149,13 +1149,60 @@ async def _job_goto(query, job_id: str, phase: str):
         except Exception as qe:
             logger.warning(f"Failed to re-queue job: {qe}")
 
-        await query.edit_message_text(
-            f"⏪ <b>تم الرجوع إلى: {phase_ar}</b>\n\n"
-            f"🔄 جاري إعادة التشغيل من مرحلة {phase_ar}...\n"
-            f"🆔 <code>{job_id}</code>",
-            parse_mode="HTML",
-        )
-        _run_pipeline_async(job_id)
+        # For voice phase: don't auto-start — wait for user to select voice
+        # The voice phase will send selection menu and block
+        needs_input = (phase == "voice" and not db.get_job(job_id).get("selected_voice_id"))
+        
+        if needs_input:
+            # Just send selection menu, don't start pipeline
+            from src.phase5_production.voice_cloner import VoiceCloner
+            cloner = VoiceCloner()
+            voices = cloner.list_voices()
+            if voices:
+                await query.edit_message_text(
+                    f"⏪ <b>تم الرجوع إلى: {phase_ar}</b>\n\n"
+                    f"🎙️ اختر المعلق الصوتي أولاً:",
+                    parse_mode="HTML",
+                )
+                # Send voice selection inline
+                import os
+                bot_token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+                chat_id = os.environ.get("TELEGRAM_CHAT_ID", "")
+                if not bot_token or not chat_id:
+                    tg = config.get("settings", {}).get("telegram", {})
+                    bot_token = bot_token or tg.get("bot_token", "")
+                    chat_id = chat_id or tg.get("admin_chat_id") or tg.get("chat_id", "")
+                
+                import requests as req
+                api = f"https://api.telegram.org/bot{bot_token}"
+                buttons = []
+                default_id = cloner.get_default_voice_id()
+                for v in voices:
+                    label = f"👤 {v.name}"
+                    if v.voice_id == default_id:
+                        label += " ⭐"
+                    buttons.append([{"text": label, "callback_data": f"vs_{job_id}_{v.voice_id}"}])
+                buttons.append([{"text": "🤖 Edge TTS الافتراضي", "callback_data": f"vs_{job_id}___edge_tts__"}])
+                
+                req.post(f"{api}/sendMessage", json={
+                    "chat_id": chat_id, "parse_mode": "HTML",
+                    "text": f"🎙️ <b>اختر الشخصية الصوتية:</b>\n🆔 <code>{job_id}</code>",
+                    "reply_markup": {"inline_keyboard": buttons},
+                }, timeout=10)
+            else:
+                await query.edit_message_text(
+                    f"⏪ <b>تم الرجوع إلى: {phase_ar}</b>\n🔄 جاري إعادة التشغيل...\n🆔 <code>{job_id}</code>",
+                    parse_mode="HTML",
+                )
+                _run_pipeline_async(job_id)
+        else:
+            await query.edit_message_text(
+                f"⏪ <b>تم الرجوع إلى: {phase_ar}</b>\n\n"
+                f"🔄 جاري إعادة التشغيل من مرحلة {phase_ar}...\n"
+                f"🆔 <code>{job_id}</code>",
+                parse_mode="HTML",
+            )
+            _run_pipeline_async(job_id)
     except Exception as e:
         logger.error(f"Job goto failed: {e}", exc_info=True)
         await query.edit_message_text(f"❌ خطأ: {e}")
