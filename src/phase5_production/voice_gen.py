@@ -737,21 +737,30 @@ class VoiceGenerator:
         - Loudness normalization: -16 LUFS (broadcast standard)
         - No EQ/compression — keeps Fish Speech's natural quality
         """
-        # Audio processing chain for broadcast documentary voice:
-        # 1. Pitch: -0.5 semitone (deeper = authority)
-        # 2. De-plosive: soften harsh ت ط ك sounds (highpass transients)
-        # 3. De-esser: tame س ص ش metallic sibilance (-4dB at 6-8kHz)
-        # 4. Warmth: +2dB at 200Hz (chest resonance, less clinical)
-        # 5. Presence: +1.5dB at 3kHz (clarity without harshness)
-        # 6. Loudness: -16 LUFS broadcast standard
+        # Audio processing chain — documentary broadcast voice:
+        #
+        # 1. Pitch: -0.5 semitone (deeper = authority/weight)
+        # 2. Highpass 80Hz: remove rumble
+        # 3. Warmth: +2dB at 200Hz (chest resonance)
+        # 4. Presence: +1.5dB at 3kHz (clarity)
+        # 5. Surgical de-esser: NARROW band notch at 5.5-7.5kHz
+        #    Fish Speech Arabic سين artifacts live at 5500-7500Hz
+        #    Using TWO narrow notches instead of wide shelf (preserves air)
+        # 6. Anti-metallic: -2dB at 9kHz (removes digital "ringing")
+        # 7. Subtle saturation via soft-knee compressor (adds warmth/grit)
+        #    Low ratio + slow attack = preserves transients, adds body
+        #    This simulates slight "vocal fry" / analog warmth
+        # 8. Loudness norm: -16 LUFS broadcast standard
         af_chain = (
             "asetrate=44100*0.9716,"
             "aresample=44100,"
             "highpass=f=80,"
             "equalizer=f=200:t=q:w=1:g=2,"
             "equalizer=f=3000:t=q:w=1.5:g=1.5,"
-            "equalizer=f=6500:t=h:w=2500:g=-4,"
-            "acompressor=threshold=-25dB:ratio=2:attack=20:release=200:makeup=1dB,"
+            "equalizer=f=5800:t=q:w=0.8:g=-5,"
+            "equalizer=f=7200:t=q:w=0.8:g=-4,"
+            "equalizer=f=9000:t=q:w=1:g=-2,"
+            "acompressor=threshold=-30dB:ratio=1.5:attack=50:release=300:makeup=1dB:knee=6,"
             "loudnorm=I=-16:TP=-1.5:LRA=11"
         )
         subprocess.run(

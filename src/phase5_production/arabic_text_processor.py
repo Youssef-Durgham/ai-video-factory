@@ -105,11 +105,15 @@ EMPHASIS_WORDS = {
     "لا مثيل", "لم يسبق",
 }
 
-# Struggle/effort words → comma before AND after for slower delivery
+# Struggle/heavy words → comma before AND after for slower delivery
+# These words should feel "heavy" — the AI rushes them without pauses
 SLOW_WORDS = {
     "تضطر", "تكافح", "تهاجر", "تعاني", "تواجه", "تصارع",
     "تبتلع", "تنهار", "تتحطم", "تغرق", "تتلاشى", "تقاوم",
     "تجتاح", "تدمر", "تزلزل", "تفتك", "تجبر", "ترغم",
+    # Heavy/important nouns (AI treats same as lightweight words)
+    "الجسيمة", "تلتهم", "صراع", "دمار", "حرب", "كارثة",
+    "مجاعة", "وباء", "انهيار", "خراب", "فتك", "إبادة",
 }
 
 # Peak/climax phrases → stretched with ellipsis for rising then falling tone
@@ -180,10 +184,19 @@ def process_arabic_for_tts(text: str) -> str:
     for phrase in CLIMAX_PHRASES:
         text = text.replace(phrase, f"... {phrase}.")
 
-    # 6. Extend sentence pauses for documentary pacing
-    # Single period → period + space (Fish Speech reads this as longer pause)
-    # Add ellipsis between sentences for breathing room
-    text = re.sub(r'\.\s+', '... ', text)
+    # 6. Vary sentence endings to break monotone down-tilt pattern
+    # Fish Speech always ends sentences with same falling intonation
+    # Alternating . and ... creates subtle pitch variation
+    sentences = re.split(r'(?<=\.)\s+', text)
+    varied = []
+    for i, sent in enumerate(sentences):
+        if not sent.strip():
+            continue
+        if i % 3 == 1:
+            # Every 3rd sentence: add ellipsis → creates "continuation" feel (less falling)
+            sent = sent.rstrip('.') + '...'
+        varied.append(sent)
+    text = ' '.join(varied)
     
     # 7. Break very long sentences (>20 words) with breathing pause
     sentences = text.split('...')
