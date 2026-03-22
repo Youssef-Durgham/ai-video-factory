@@ -575,9 +575,19 @@ class VoiceGenerator:
                 references = [{"audio": ref_audio_bytes, "text": ref_text}]
             logger.info(f"Using voice profile '{voice_profile.voice_id}' (ref_id={reference_id})")
 
-        # ── Preprocess Arabic text for better pronunciation ──
+        # ── Strip directorial cues [بصري: ...] [صوتي: ...] before TTS ──
+        import re as _re
+        clean_text = _re.sub(r'\[بصري:[^\]]*\]', '', text)
+        clean_text = _re.sub(r'\[صوتي:[^\]]*\]', '', clean_text)
+        clean_text = _re.sub(r'\[.*?:\s*.*?\]', '', clean_text)  # Any [label: content]
+        clean_text = _re.sub(r'📹.*?\n', '', clean_text)
+        clean_text = _re.sub(r'🔊.*?\n', '', clean_text)
+        clean_text = _re.sub(r'🎙️\s*السرد:\s*', '', clean_text)
+        clean_text = clean_text.strip()
+
+        # ── Preprocess Arabic text (numbers, abbreviations) ──
         from src.phase5_production.arabic_text_processor import process_arabic_for_tts
-        processed_text = process_arabic_for_tts(text)
+        processed_text = process_arabic_for_tts(clean_text if clean_text else text)
 
         # TTS parameters tuned for documentary narration:
         # 0.75 temp = slight human-like variation (breathing/pitch micro-changes)
