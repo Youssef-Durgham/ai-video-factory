@@ -92,7 +92,6 @@ class VoiceGenerator:
         self.config = config or VoiceGenConfig()
         self._session = requests.Session()
         self._fish_available = False
-        self._server_start_attempted = False  # Prevent multiple starts
 
     # ─── Server Management ─────────────────────────────
 
@@ -126,12 +125,21 @@ class VoiceGenerator:
             self._fish_available = True
             return True
 
-        # Don't try to start multiple times
-        if self._server_start_attempted:
-            logger.warning("Fish Speech server start already attempted — not retrying")
-            return False
+        # Kill any zombie Fish Speech processes first
+        try:
+            import subprocess as _sp
+            _sp.run(
+                ["powershell", "-Command",
+                 "Get-WmiObject Win32_Process | Where-Object { $_.CommandLine -match 'api_server.*checkpoint' } | "
+                 "ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"],
+                capture_output=True, timeout=10,
+            )
+            logger.info("Killed zombie Fish Speech processes before starting fresh")
+            import time as _time
+            _time.sleep(2)
+        except Exception:
+            pass
 
-        self._server_start_attempted = True
         logger.info("Fish Speech not running — starting it...")
         max_wait = max_wait or self.config.startup_timeout
 
@@ -217,25 +225,22 @@ class VoiceGenerator:
                 # Try to start it
                 self.ensure_server()
 
-        # Use Fish Speech (primary — NEVER silently fall back to Edge TTS)
-        if self._fish_available:
-            result = self._generate_fish_speech(text, output_dir, filename, mp3_path, voice_profile=voice_profile)
-            if result.success:
-                return result
-            logger.error(f"Fish Speech failed: {result.error}")
-            # Return error — do NOT fall back to Edge TTS
-            # Edge TTS produces a completely different voice which defeats the purpose
-            return result
+        # Fish Speech ONLY — NO Edge TTS fallback
+        # Edge TTS produces completely different voice = unusable
+        if not self._fish_available:
+            self._fish_available = self.check_server()
+            if not self._fish_available:
+                # Try starting server (reset the flag first)
+                self._server_start_attempted = False
+                self.ensure_server(max_wait=180)
+        
+        if not self._fish_available:
+            return VoiceGenResult(
+                success=False, error="Fish Speech server not available — cannot generate voice"
+            )
 
-        # Edge TTS ONLY if Fish Speech server is not running at all
-        if not self.check_server():
-            logger.warning("Fish Speech server not running — using Edge TTS as last resort")
-            result = self._generate_edge_tts(text, mp3_path)
-            if result.success:
-                return result
-
-        logger.error(f"All voice engines failed for: {text[:50]}...")
-        return VoiceGenResult(success=False, error="All engines failed")
+        result = self._generate_fish_speech(text, output_dir, filename, mp3_path, voice_profile=voice_profile)
+        return result
 
     def generate_directed(
         self,

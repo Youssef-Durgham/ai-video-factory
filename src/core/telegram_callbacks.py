@@ -108,9 +108,16 @@ def _get_db():
     return FactoryDB(db_path), config
 
 
+_running_jobs = set()  # Track which jobs are currently running
+
 def _run_pipeline_async(job_id: str):
-    """Run pipeline in a background thread (non-blocking)."""
+    """Run pipeline in a background thread (non-blocking). Prevents duplicate runs."""
+    if job_id in _running_jobs:
+        logger.warning(f"Pipeline already running for {job_id} — skipping duplicate start")
+        return
+    
     def _run():
+        _running_jobs.add(job_id)
         try:
             from src.core.pipeline_runner import PipelineRunner
             runner = PipelineRunner()
@@ -122,6 +129,8 @@ def _run_pipeline_async(job_id: str):
         except Exception as e:
             logger.error(f"Pipeline error for {job_id}: {e}", exc_info=True)
             send_telegram_sync(f"❌ <b>خطأ في المشروع</b>\n\n🆔 <code>{job_id}</code>\n\n{str(e)[:200]}")
+        finally:
+            _running_jobs.discard(job_id)
     t = threading.Thread(target=_run, daemon=True)
     t.start()
 
