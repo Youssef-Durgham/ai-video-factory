@@ -737,28 +737,19 @@ class VoiceGenerator:
         - Loudness normalization: -16 LUFS (broadcast standard)
         - No EQ/compression — keeps Fish Speech's natural quality
         """
-        # Audio processing chain — documentary broadcast voice:
+        # Audio processing — MINIMAL chain:
+        # 1. Pitch: -0.5 semitone (deeper = documentary authority)
+        # 2. De-esser: surgical notches (5.8k + 7.2k)
+        # 3. Loudness norm only
         #
-        # 1. Pitch: -0.5 semitone (deeper = authority)
-        # 2. Highpass 80Hz: remove rumble
-        # 3. Warmth: +2dB at 200Hz (chest resonance)
-        # 4. Presence: +1.5dB at 3kHz (clarity)
-        # 5. De-esser: narrow notches at 5.8kHz and 7.2kHz
-        # 6. Anti-metallic: -2dB at 9kHz
-        # 7. Soft compressor (warmth/body)
-        # 8. afade on silence boundaries (prevents hard clipping at word endings)
-        # 9. Loudness norm: -16 LUFS
+        # REMOVED: compressor, gate, warmth EQ, presence EQ
+        # Reason: every filter added makes the voice less natural.
+        # Fish Speech output is already broadcast quality.
         af_chain = (
             "asetrate=44100*0.9716,"
             "aresample=44100,"
-            "highpass=f=80,"
-            "equalizer=f=200:t=q:w=1:g=2,"
-            "equalizer=f=3000:t=q:w=1.5:g=1.5,"
-            "equalizer=f=5800:t=q:w=0.8:g=-5,"
-            "equalizer=f=7200:t=q:w=0.8:g=-4,"
-            "equalizer=f=9000:t=q:w=1:g=-2,"
-            "acompressor=threshold=-30dB:ratio=1.5:attack=50:release=300:makeup=1dB:knee=6,"
-            "agate=threshold=0.003:ratio=2:attack=5:release=80,"
+            "equalizer=f=5800:t=q:w=0.8:g=-4,"
+            "equalizer=f=7200:t=q:w=0.8:g=-3,"
             "loudnorm=I=-16:TP=-1.5:LRA=11"
         )
         subprocess.run(
