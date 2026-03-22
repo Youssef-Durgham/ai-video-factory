@@ -262,7 +262,15 @@ class VoiceCloner:
     # ════════════════════════════════════════════════════════════
 
     def _find_mood_segments(self, audio_path: Path, whisper_segments: list) -> dict:
-        """Analyze audio energy to find calm, dramatic, and questioning segments."""
+        """
+        Multi-signal mood analysis: pitch + speech rate + energy + text.
+        
+        For each Whisper segment, compute a mood score using 4 signals:
+        - Pitch variation (F0 std): high variation = dramatic
+        - Speech rate (words/sec): fast transitions = dramatic, slow = calm
+        - Energy (RMS): loud = dramatic, quiet = calm  
+        - Text cues: ؟ = question, ! = exclamation, dramatic words = dramatic
+        """
         try:
             import numpy as np
             import librosa
@@ -270,92 +278,201 @@ class VoiceCloner:
             y, sr = librosa.load(str(audio_path), sr=22050)
             total_dur = len(y) / sr
 
-            # Compute RMS energy in 1-second windows
-            hop = sr  # 1 second
-            rms_values = []
-            for i in range(0, len(y) - hop, hop):
-                chunk = y[i:i + hop]
-                rms = np.sqrt(np.mean(chunk ** 2))
-                rms_values.append(rms)
-
-            if not rms_values:
+            if not whisper_segments:
                 return {}
 
-            avg_rms = np.mean(rms_values)
-            std_rms = np.std(rms_values)
+            # ── Score each Whisper segment on 4 axes ──
+            scored_segments = []
 
-            # Classify each second
-            moods_per_sec = []
-            for i, rms in enumerate(rms_values):
-                if rms < avg_rms - 0.3 * std_rms:
-                    moods_per_sec.append("calm")
-                elif rms > avg_rms + 0.5 * std_rms:
-                    moods_per_sec.append("dramatic")
-                else:
-                    moods_per_sec.append("neutral")
-
-            # Find best contiguous windows for each mood
-            result = {}
-            for target_mood in ["calm", "dramatic"]:
-                best_start, best_len = self._find_longest_run(moods_per_sec, target_mood, min_len=8)
-                if best_start >= 0 and best_len >= 8:
-                    seg_path = self.TEMP_DIR / f"mood_{target_mood}.wav"
-                    # Add 2s padding
-                    start_sec = max(0, best_start - 1)
-                    duration = min(best_len + 2, 60)
-
-                    subprocess.run(
-                        [FFMPEG, "-y", "-i", str(audio_path),
-                         "-ss", str(start_sec), "-t", str(duration),
-                         "-ac", "1", "-ar", "44100",
-                         "-af", "loudnorm=I=-16:TP=-1.5:LRA=11",
-                         str(seg_path)],
-                        capture_output=True, timeout=60,
-                    )
-                    if seg_path.exists():
-                        # Get transcription for this segment
-                        seg_text = self._get_text_for_range(
-                            whisper_segments, start_sec, start_sec + duration
-                        )
-                        result[target_mood] = {
-                            "path": seg_path,
-                            "duration": duration,
-                            "text": seg_text,
-                            "mood": target_mood,
-                        }
-
-            # Find questioning segments (sentences ending with ?)
             for seg in whisper_segments:
-                if seg["text"].strip().endswith("؟") and (seg["end"] - seg["start"]) > 3:
-                    q_path = self.TEMP_DIR / "mood_question.wav"
-                    # Get 10-15s around the question
-                    q_start = max(0, seg["start"] - 5)
-                    q_dur = min(15, seg["end"] - q_start + 3)
+                start_sample = int(seg["start"] * sr)
+                end_sample = min(int(seg["end"] * sr), len(y))
+                if end_sample - start_sample < sr * 0.5:
+                    continue  # Too short
 
-                    subprocess.run(
-                        [FFMPEG, "-y", "-i", str(audio_path),
-                         "-ss", str(q_start), "-t", str(q_dur),
-                         "-ac", "1", "-ar", "44100",
-                         "-af", "loudnorm=I=-16:TP=-1.5:LRA=11",
-                         str(q_path)],
-                        capture_output=True, timeout=60,
+                chunk = y[start_sample:end_sample]
+                duration = (end_sample - start_sample) / sr
+                text = seg["text"].strip()
+                words = text.split()
+                if not words:
+                    continue
+
+                # 1. Pitch variation (F0 standard deviation)
+                try:
+                    f0, voiced, _ = librosa.pyin(
+                        chunk, fmin=60, fmax=400, sr=sr,
+                        frame_length=2048, hop_length=512,
                     )
-                    if q_path.exists():
-                        q_text = self._get_text_for_range(whisper_segments, q_start, q_start + q_dur)
-                        result["question"] = {
-                            "path": q_path,
-                            "duration": q_dur,
-                            "text": q_text,
-                            "mood": "question",
-                        }
-                        break  # One question sample is enough
+                    f0_valid = f0[voiced] if voiced is not None else f0[~np.isnan(f0)]
+                    pitch_std = float(np.std(f0_valid)) if len(f0_valid) > 5 else 0.0
+                    pitch_mean = float(np.mean(f0_valid)) if len(f0_valid) > 5 else 150.0
+                except Exception:
+                    pitch_std = 0.0
+                    pitch_mean = 150.0
+
+                # 2. Speech rate (words per second)
+                speech_rate = len(words) / max(duration, 0.1)
+
+                # 3. Energy (RMS)
+                rms = float(np.sqrt(np.mean(chunk ** 2)))
+
+                # 4. Text cues
+                has_question = text.endswith("؟") or "؟" in text
+                has_exclaim = "!" in text
+                dramatic_words = {"مذهل", "خطير", "غامض", "لا يصدق", "مستحيل",
+                                  "صادم", "كارثة", "انفجار", "اختفاء", "رهيب",
+                                  "تختفي", "تدمر", "تنهار", "مفاجئ", "لغز"}
+                has_dramatic_text = any(w in text for w in dramatic_words)
+
+                # ── Classify mood ──
+                # Weights: pitch_variation(35%) + text(30%) + energy(20%) + speech_rate(15%)
+                drama_score = 0.0
+
+                # Pitch: high std = dramatic (documentary narrators vary pitch for drama)
+                if pitch_std > 30:
+                    drama_score += 0.35
+                elif pitch_std > 15:
+                    drama_score += 0.15
+
+                # Text: strongest signal
+                if has_dramatic_text or has_exclaim:
+                    drama_score += 0.30
+                elif has_question:
+                    drama_score += 0.10  # Questions are separate mood
+
+                # Energy: loud = dramatic
+                # (normalized later against all segments)
+                energy_raw = rms
+
+                # Speech rate: very fast or very slow = dramatic
+                # Normal documentary = ~2.5 words/sec
+                rate_deviation = abs(speech_rate - 2.5)
+                if rate_deviation > 1.5:
+                    drama_score += 0.15
+                elif rate_deviation > 0.8:
+                    drama_score += 0.07
+
+                scored_segments.append({
+                    "start": seg["start"],
+                    "end": seg["end"],
+                    "text": text,
+                    "pitch_std": pitch_std,
+                    "pitch_mean": pitch_mean,
+                    "speech_rate": speech_rate,
+                    "energy": energy_raw,
+                    "drama_score": drama_score,
+                    "is_question": has_question,
+                })
+
+            if not scored_segments:
+                return {}
+
+            # ── Normalize energy across all segments ──
+            energies = [s["energy"] for s in scored_segments]
+            avg_energy = np.mean(energies)
+            std_energy = np.std(energies) if len(energies) > 1 else 0.1
+
+            for seg in scored_segments:
+                energy_z = (seg["energy"] - avg_energy) / max(std_energy, 0.01)
+                if energy_z > 0.8:
+                    seg["drama_score"] += 0.20
+                elif energy_z > 0.3:
+                    seg["drama_score"] += 0.10
+
+                # Final classification
+                if seg["is_question"]:
+                    seg["mood"] = "question"
+                elif seg["drama_score"] >= 0.45:
+                    seg["mood"] = "dramatic"
+                elif seg["drama_score"] <= 0.15:
+                    seg["mood"] = "calm"
+                else:
+                    seg["mood"] = "neutral"
+
+            # ── Find best contiguous windows per mood ──
+            result = {}
+
+            for target_mood in ["calm", "dramatic", "question"]:
+                # Collect segments of this mood
+                mood_segs = [s for s in scored_segments if s["mood"] == target_mood]
+                if not mood_segs:
+                    continue
+
+                # Find best contiguous group (close in time)
+                mood_segs.sort(key=lambda s: s["start"])
+                best_group = self._find_best_contiguous_group(mood_segs, min_duration=8, max_duration=60)
+
+                if not best_group:
+                    # Use single best segment for questions
+                    if target_mood == "question" and mood_segs:
+                        best_group = [mood_segs[0]]
+                    else:
+                        continue
+
+                # Extract audio
+                group_start = max(0, best_group[0]["start"] - 1)
+                group_end = min(total_dur, best_group[-1]["end"] + 1)
+                group_dur = group_end - group_start
+
+                seg_path = self.TEMP_DIR / f"mood_{target_mood}.wav"
+                subprocess.run(
+                    [FFMPEG, "-y", "-i", str(audio_path),
+                     "-ss", str(group_start), "-t", str(group_dur),
+                     "-ac", "1", "-ar", "44100",
+                     "-af", "loudnorm=I=-16:TP=-1.5:LRA=11",
+                     str(seg_path)],
+                    capture_output=True, timeout=60,
+                )
+
+                if seg_path.exists():
+                    seg_text = " ".join(s["text"] for s in best_group)
+                    result[target_mood] = {
+                        "path": seg_path,
+                        "duration": group_dur,
+                        "text": seg_text,
+                        "mood": target_mood,
+                    }
+                    logger.info(
+                        f"Mood '{target_mood}': {group_dur:.1f}s, "
+                        f"avg_pitch_std={np.mean([s['pitch_std'] for s in best_group]):.1f}, "
+                        f"avg_drama={np.mean([s['drama_score'] for s in best_group]):.2f}"
+                    )
 
             logger.info(f"Found mood segments: {list(result.keys())}")
             return result
 
         except Exception as e:
             logger.warning(f"Mood analysis failed: {e}")
+            import traceback
+            traceback.print_exc()
             return {}
+
+    def _find_best_contiguous_group(self, segments: list, min_duration: float = 8, max_duration: float = 60) -> list:
+        """Find best group of nearby segments that together reach min_duration."""
+        if not segments:
+            return []
+
+        best_group = []
+        best_duration = 0
+
+        for i in range(len(segments)):
+            group = [segments[i]]
+            group_dur = segments[i]["end"] - segments[i]["start"]
+
+            for j in range(i + 1, len(segments)):
+                gap = segments[j]["start"] - segments[j - 1]["end"]
+                if gap > 5:  # More than 5s gap = not contiguous
+                    break
+                group.append(segments[j])
+                group_dur = segments[j]["end"] - segments[i]["start"]
+                if group_dur >= max_duration:
+                    break
+
+            if group_dur >= min_duration and group_dur > best_duration:
+                best_group = group[:]
+                best_duration = group_dur
+
+        return best_group
 
     def _find_longest_run(self, arr: list, value: str, min_len: int = 5) -> tuple:
         """Find longest contiguous run of value in array."""
