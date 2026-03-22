@@ -124,15 +124,19 @@ def process_arabic_for_tts(text: str) -> str:
     for abbr, expansion in ABBREVIATIONS.items():
         text = re.sub(rf'\b{re.escape(abbr)}\b', expansion, text)
 
-    # 2. Convert numbers to words
+    # 2. Convert numbers to words + add pacing pauses around data
     def _replace_number(m):
         try:
             n = int(m.group(0))
-            return _number_to_arabic(n)
+            arabic_num = _number_to_arabic(n)
+            # Add comma before number for slight pause (prevents speed-up on data)
+            return f"، {arabic_num}،"
         except ValueError:
             return m.group(0)
 
     text = re.sub(r'\b\d+\b', _replace_number, text)
+    # Clean double commas from number insertion
+    text = re.sub(r'،\s*،', '،', text)
 
     # 3. Percentage
     text = re.sub(r'(\d+)\s*%', lambda m: _number_to_arabic(int(m.group(1))) + " بالمئة", text)

@@ -561,21 +561,22 @@ class VoiceGenerator:
         from src.phase5_production.arabic_text_processor import process_arabic_for_tts
         processed_text = process_arabic_for_tts(text)
 
-        # TTS parameters — balanced for natural Arabic narration
-        # 0.7 temp = natural variation (0.3 was too robotic)
-        # 0.7 top_p = good variety
-        # 1.2 rep_penalty = prevents loops without killing flow
-        temperature = kwargs.get("temperature", 0.7)
+        # TTS parameters tuned for documentary narration:
+        # 0.75 temp = slight human-like variation (breathing/pitch micro-changes)
+        #   0.7 was good, 0.75 adds ~5% instability = more human
+        # 0.7 top_p = good variety without hallucination
+        # 1.15 rep_penalty = natural flow (1.2 was slightly restrictive)
+        temperature = kwargs.get("temperature", 0.75)
         top_p = kwargs.get("top_p", 0.7)
-        repetition_penalty = kwargs.get("repetition_penalty", 1.2)
+        repetition_penalty = kwargs.get("repetition_penalty", 1.15)
 
         request_data = {
             "text": processed_text,
             "references": references,
             "reference_id": reference_id,
             "format": "wav",
-            "max_new_tokens": 4096,       # More tokens for Arabic (longer sequences)
-            "chunk_length": 200,           # Original value — 100 was too fragmented
+            "max_new_tokens": 4096,
+            "chunk_length": 150,           # 150 = sweet spot (200 was too fast, 100 too fragmented)
             "top_p": top_p,
             "repetition_penalty": repetition_penalty,
             "temperature": temperature,
@@ -712,10 +713,19 @@ class VoiceGenerator:
 
     @staticmethod
     def _wav_to_mp3(wav_path: str, mp3_path: str):
-        """Convert WAV to MP3 using ffmpeg."""
+        """Convert WAV to MP3 with subtle voice deepening for documentary authority.
+        
+        - Pitch shift: -0.5 semitone (barely noticeable, adds vocal weight)
+        - Loudness normalization: -16 LUFS (broadcast standard)
+        - No EQ/compression — keeps Fish Speech's natural quality
+        """
+        # asetrate: lower pitch by ~3% (0.5 semitone = factor 0.9716)
+        # aresample: restore original sample rate after pitch shift
+        # loudnorm: consistent volume across all clips
         subprocess.run(
             [
                 FFMPEG, "-y", "-i", wav_path,
+                "-af", "asetrate=44100*0.9716,aresample=44100,loudnorm=I=-16:TP=-1.5:LRA=11",
                 "-codec:a", "libmp3lame", "-qscale:a", "2",
                 mp3_path,
             ],
