@@ -1629,12 +1629,14 @@ async def _voice_regen_scene(query, job_id: str, scene_idx: int):
                 return
 
             from src.phase5_production.voice_gen import VoiceGenerator
-            from src.phase5_production.voice_cloner import VoiceCloner
             gen = VoiceGenerator()
             gen.ensure_server()
 
-            cloner = VoiceCloner()
-            voice_id = cloner.get_default_voice_id()
+            # Use the voice the user selected (from DB), not default
+            job = db.get_job(job_id)
+            voice_id = job.get("selected_voice_id") if job else None
+            if voice_id == "__edge_tts__":
+                voice_id = None
 
             output_dir = f"output/{job_id}/voice"
             result = gen.generate(
