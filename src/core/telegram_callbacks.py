@@ -1198,8 +1198,39 @@ def _cleanup_after_phase(db, job_id: str, phase: str):
         sql = f"UPDATE jobs SET {', '.join(nulls)} WHERE id = ?"
         db.conn.execute(sql, (job_id,))
 
+    # Clean up output files for phases being re-run
+    import shutil
+    base = Path(f"output/{job_id}")
+    PHASE_FILES = {
+        "voice": [base / "voice"],
+        "music": [base / "audio" / "music"],
+        "sfx": [base / "audio" / "sfx"],
+        "images": [base / "images"],
+        "video": [base / "videos"],
+        "compose": [base / "final.mp4", base / "temp_video_concat.mp4", base / "temp_mixed_audio.mp3"],
+    }
+    for p in phases_to_clean:
+        for path in PHASE_FILES.get(p, []):
+            try:
+                if path.is_dir():
+                    shutil.rmtree(str(path), ignore_errors=True)
+                    logger.info(f"Deleted dir: {path}")
+                elif path.exists():
+                    path.unlink()
+                    logger.info(f"Deleted file: {path}")
+            except Exception as e:
+                logger.warning(f"Failed to delete {path}: {e}")
+
+    # Clear voice selection state if going back to voice
+    if phase in ("voice", "research", "script", "images"):
+        state = _load_review_state()
+        state.pop(f"voice_selected_{job_id}", None)
+        state.pop(f"voice_approved_{job_id}", None)
+        state.pop(f"images_approved_{job_id}", None)
+        _save_review_state(state)
+
     db.conn.commit()
-    logger.info(f"Cleanup complete for {job_id}: reset from {phase} forward")
+    logger.info(f"Cleanup complete for {job_id}: reset from {phase} forward (files + DB)")
 
 
 async def _job_show_script(query, job_id: str):
