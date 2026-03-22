@@ -260,6 +260,15 @@ class Factory:
                     logger.info(f"Job {job_id} already running via callback — skipping")
                     time.sleep(10)
                     continue
+                
+                # Don't auto-start jobs that need user input
+                # (voice without selected_voice_id, image_qa needing approval)
+                job_data = self.db.get_job(job_id)
+                job_status = job_data.get("status", "") if job_data else ""
+                if job_status == "voice" and not job_data.get("selected_voice_id"):
+                    # Voice phase needs user to select voice first
+                    time.sleep(30)
+                    continue
 
                 logger.info(f"Processing job: {job_id}")
                 _running_jobs.add(job_id)

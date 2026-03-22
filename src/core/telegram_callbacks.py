@@ -888,7 +888,30 @@ async def _img_approve_all(query, job_id: str):
     )
 
     db, _ = _get_db()
-    # Resume pipeline: image_qa → voice (next phase)
+    # Resume pipeline: set to voice and let callback start it
+    try:
+        from src.core.job_state_machine import JobStateMachine, JobStatus
+        sm = JobStateMachine(db)
+        sm.force_reset(job_id, JobStatus.VOICE)
+    except Exception:
+        db.conn.execute("UPDATE jobs SET status='voice', blocked_reason=NULL, blocked_phase=NULL, blocked_at=NULL WHERE id=?", (job_id,))
+        db.conn.commit()
+
+    _run_pipeline_async(job_id)
+
+
+async def _voice_approve_all(query, job_id: str):
+    """Approve all voice clips and resume pipeline."""
+    state = _load_review_state()
+    state[f"voice_approved_{job_id}"] = True
+    _save_review_state(state)
+
+    await query.edit_message_text(
+        "✅ <b>تمت الموافقة على التعليق الصوتي</b>\n\n⏳ جاري المتابعة...",
+        parse_mode="HTML",
+    )
+
+    db, _ = _get_db()
     try:
         from src.core.job_state_machine import JobStateMachine, JobStatus
         sm = JobStateMachine(db)
@@ -1541,27 +1564,7 @@ async def _channel_edit_name(query, ch_idx: int, context):
 # ═══════════════════════════════════════════════════════════════
 # Voice Review (scene-by-scene approval)
 # ═══════════════════════════════════════════════════════════════
-
-async def _voice_approve_all(query, job_id: str):
-    """Approve all voice clips and resume pipeline."""
-    state = _load_review_state()
-    state[f"voice_approved_{job_id}"] = True
-    _save_review_state(state)
-
-    db, _ = _get_db()
-    try:
-        from src.core.job_state_machine import JobStateMachine, JobStatus
-        sm = JobStateMachine(db)
-        sm.force_reset(job_id, JobStatus.VOICE)
-    except Exception:
-        db.update_job_status(job_id, "voice")
-        db.conn.commit()
-
-    await query.edit_message_text(
-        "✅ <b>تمت الموافقة على جميع المقاطع الصوتية</b>\n\nجاري المتابعة...",
-        parse_mode="HTML",
-    )
-    _run_pipeline_async(job_id)
+# _voice_approve_all is defined above (near _img_approve_all)
 
 
 async def _voice_regen_scene(query, job_id: str, scene_idx: int):
