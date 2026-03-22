@@ -1230,13 +1230,19 @@ def _cleanup_after_phase(db, job_id: str, phase: str):
             except Exception as e:
                 logger.warning(f"Failed to delete {path}: {e}")
 
-    # Clear voice selection state if going back to voice
+    # Clear selection/approval state when going back
     if phase in ("voice", "research", "script", "images"):
         state = _load_review_state()
         state.pop(f"voice_selected_{job_id}", None)
         state.pop(f"voice_approved_{job_id}", None)
         state.pop(f"images_approved_{job_id}", None)
         _save_review_state(state)
+        # Also clear voice_id from DB so user gets asked again
+        try:
+            db.conn.execute("UPDATE jobs SET selected_voice_id=NULL WHERE id=?", (job_id,))
+            db.conn.commit()
+        except Exception:
+            pass
 
     db.conn.commit()
     logger.info(f"Cleanup complete for {job_id}: reset from {phase} forward (files + DB)")
