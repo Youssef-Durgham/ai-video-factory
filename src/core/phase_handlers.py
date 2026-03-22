@@ -1162,12 +1162,7 @@ class MusicPhase(BasePhase):
         gen = MusicGenerator()
         output_dir = f"output/{job_id}/audio/music"
 
-        # Try to start ACE-Step server
-        ace_available = gen.ensure_server()
-        if ace_available:
-            logger.info("ACE-Step server available for music generation")
-        else:
-            logger.warning("ACE-Step server not available, will use fallback")
+        _notify("🎵 تحميل موديل الموسيقى...")
 
         # Calculate total duration from actual voice durations or scene estimates
         total_dur = 0.0
@@ -1196,13 +1191,18 @@ class MusicPhase(BasePhase):
         if total_dur < 10:
             total_dur = len(scenes) * 6.0
 
-        result = gen.generate(scenes, output_dir, total_dur)
-        if not result.success:
-            logger.warning(f"Music generation failed: {result.error}, continuing without music")
-            return PhaseResult(success=True, score=5.0, reason="Music generation failed, continuing")
+        try:
+            result = gen.generate(scenes=scenes, output_dir=output_dir, duration_sec=total_dur)
+            if not result.success:
+                logger.warning(f"Music generation failed: {result.error}, continuing without music")
+                _notify(f"⚠️ موسيقى — فشل ({result.error[:100]}), مكمّلين بدونها")
+                return PhaseResult(success=True, score=5.0, reason="Music generation failed, continuing")
 
-        logger.info(f"Music complete for {job_id}: {result.mood} ({result.method}, {result.duration_sec:.0f}s)")
-        return PhaseResult(success=True, score=8.0)
+            _notify(f"✅ موسيقى — {result.method} ({result.duration_sec:.0f}s)")
+            logger.info(f"Music complete for {job_id}: {result.mood} ({result.method}, {result.duration_sec:.0f}s)")
+            return PhaseResult(success=True, score=8.0)
+        finally:
+            gen.unload_model()
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -1436,11 +1436,17 @@ class SFXPhase(BasePhase):
 
         gen = SFXGenerator()
         output_dir = f"output/{job_id}/audio/sfx"
-        results = gen.generate_batch(scenes, output_dir)
 
-        success_count = sum(1 for r in results if r.success)
-        logger.info(f"SFX complete for {job_id}: {success_count}/{len(scenes)}")
-        return PhaseResult(success=True, score=8.0)
+        _notify(f"🔊 تحميل موديل المؤثرات الصوتية ({len(scenes)} مشهد)...")
+
+        try:
+            results = gen.generate_batch(scenes, output_dir)
+            success_count = sum(1 for r in results if r.success)
+            _notify(f"✅ المؤثرات — {success_count}/{len(scenes)} نجحت")
+            logger.info(f"SFX complete for {job_id}: {success_count}/{len(scenes)}")
+            return PhaseResult(success=True, score=8.0)
+        finally:
+            gen.unload_model()
 
 
 class ComposePhase(BasePhase):
