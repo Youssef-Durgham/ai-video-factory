@@ -655,6 +655,16 @@ async def _new_auto_research(query, context):
         job_id = db.create_job(channel_id, "بحث تلقائي", topic_source="auto")
         db.update_job_status(job_id, "research")
 
+        # Add to queue
+        try:
+            db.conn.execute(
+                "INSERT OR REPLACE INTO job_queue (job_id, priority, position) VALUES (?, 0, 0)",
+                (job_id,)
+            )
+            db.conn.commit()
+        except Exception:
+            pass
+
         await query.edit_message_text(
             "🔍 <b>جاري البحث عن مواضيع...</b>\n\n"
             f"🆔 <code>{job_id}</code>\n\n"
@@ -728,9 +738,20 @@ async def _topic_select(query, job_id: str, topic_idx: int):
         parse_mode="HTML",
     )
 
-    # Clear state and resume pipeline
+    # Clear state, add to queue, and resume pipeline
     state.pop(f"topics_{job_id}", None)
     _save_review_state(state)
+
+    # Ensure job is in the queue
+    try:
+        db.conn.execute(
+            "INSERT OR REPLACE INTO job_queue (job_id, priority, position) VALUES (?, 0, 0)",
+            (job_id,)
+        )
+        db.conn.commit()
+    except Exception:
+        pass
+
     _run_pipeline_async(job_id)
 
 
