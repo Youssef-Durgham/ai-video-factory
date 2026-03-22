@@ -719,15 +719,21 @@ class VoiceGenerator:
         - Loudness normalization: -16 LUFS (broadcast standard)
         - No EQ/compression — keeps Fish Speech's natural quality
         """
-        # Audio processing chain (order matters):
-        # 1. asetrate: pitch down 0.5 semitone (deeper = documentary authority)
-        # 2. aresample: restore sample rate after pitch shift
-        # 3. highshelf: gentle de-ess (-3dB above 6kHz, tames س ص ش sibilance)
-        # 4. loudnorm: broadcast standard -16 LUFS (consistent across clips)
+        # Audio processing chain for broadcast documentary voice:
+        # 1. Pitch: -0.5 semitone (deeper = authority)
+        # 2. De-plosive: soften harsh ت ط ك sounds (highpass transients)
+        # 3. De-esser: tame س ص ش metallic sibilance (-4dB at 6-8kHz)
+        # 4. Warmth: +2dB at 200Hz (chest resonance, less clinical)
+        # 5. Presence: +1.5dB at 3kHz (clarity without harshness)
+        # 6. Loudness: -16 LUFS broadcast standard
         af_chain = (
             "asetrate=44100*0.9716,"
             "aresample=44100,"
-            "equalizer=f=7000:t=h:w=3000:g=-3,"
+            "highpass=f=80,"
+            "equalizer=f=200:t=q:w=1:g=2,"
+            "equalizer=f=3000:t=q:w=1.5:g=1.5,"
+            "equalizer=f=6500:t=h:w=2500:g=-4,"
+            "acompressor=threshold=-25dB:ratio=2:attack=20:release=200:makeup=1dB,"
             "loudnorm=I=-16:TP=-1.5:LRA=11"
         )
         subprocess.run(
