@@ -298,6 +298,7 @@ class GPUMemoryManager:
             return
 
         # Force GPU-only: set num_gpu to max layers
+        # First load can take 3-5 minutes for large models (qwen3.5:27b = 17GB)
         resp = requests.post(
             f"{self.ollama_host}/api/generate",
             json={
@@ -308,7 +309,7 @@ class GPUMemoryManager:
                     "num_gpu": 999,  # Force ALL layers on GPU
                 },
             },
-            timeout=180,
+            timeout=600,  # 10 min — large models need time to load
         )
         resp.raise_for_status()
         logger.info(f"Ollama model '{model_name}' loaded (GPU-only)")
