@@ -203,6 +203,21 @@ class VoiceCloner:
 
     def _separate_vocals(self, source_wav: Path) -> Path:
         vocals_path = source_wav
+
+        # Trim to first 5 min before demucs (saves HUGE time on long videos)
+        trimmed = self.TEMP_DIR / "source_trimmed.wav"
+        total_dur = self._get_duration(source_wav)
+        if total_dur > 360:  # > 6 min
+            logger.info(f"Audio is {total_dur/60:.0f}min — trimming to 5 min for voice extraction")
+            subprocess.run(
+                [FFMPEG, "-y", "-i", str(source_wav), "-t", "300",
+                 "-acodec", "pcm_s16le", "-ar", "44100", "-ac", "2",
+                 str(trimmed)],
+                capture_output=True, timeout=120,
+            )
+            if trimmed.exists():
+                source_wav = trimmed
+
         try:
             logger.info("Separating vocals with demucs...")
             result = subprocess.run(
@@ -217,13 +232,14 @@ class VoiceCloner:
                     vocals_path = candidates[0]
                     logger.info("Demucs vocal separation successful")
 
-                    # Light cleanup
+                    # Light cleanup — trim to first 5 min (enough for reference extraction)
                     cleaned = self.TEMP_DIR / "vocals_clean.wav"
                     subprocess.run(
                         [FFMPEG, "-y", "-i", str(vocals_path),
+                         "-t", "300",  # First 5 minutes only
                          "-af", "highpass=f=80,lowpass=f=12000,afftdn=nf=-20:nt=w,loudnorm=I=-16:TP=-1.5:LRA=11",
                          str(cleaned)],
-                        capture_output=True, timeout=120,
+                        capture_output=True, timeout=300,
                     )
                     if cleaned.exists():
                         vocals_path = cleaned
@@ -237,18 +253,27 @@ class VoiceCloner:
     # ════════════════════════════════════════════════════════════
 
     def _whisper_transcribe(self, audio_path: Path) -> list[dict]:
-        """Transcribe with Whisper — returns timestamped segments."""
+        """Transcribe first 5 min with Whisper — returns timestamped segments."""
         try:
             import warnings
             warnings.filterwarnings("ignore")
             import os
             os.environ['HF_HUB_DISABLE_SYMLINKS_WARNING'] = '1'
 
+            # Trim to first 5 min before transcription (saves huge time on long videos)
+            trimmed = self.TEMP_DIR / "whisper_input.wav"
+            subprocess.run(
+                [FFMPEG, "-y", "-i", str(audio_path), "-t", "300",
+                 "-ac", "1", "-ar", "16000", str(trimmed)],
+                capture_output=True, timeout=120,
+            )
+            whisper_input = str(trimmed) if trimmed.exists() else str(audio_path)
+
             from faster_whisper import WhisperModel
             model = WhisperModel("small", device="cpu", compute_type="int8")
 
             segments_iter, info = model.transcribe(
-                str(audio_path), language="ar", beam_size=3,
+                whisper_input, language="ar", beam_size=3,
                 word_timestamps=True,
             )
 
