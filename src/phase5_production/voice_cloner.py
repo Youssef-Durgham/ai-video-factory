@@ -208,9 +208,9 @@ class VoiceCloner:
         trimmed = self.TEMP_DIR / "source_trimmed.wav"
         total_dur = self._get_duration(source_wav)
         if total_dur > 360:  # > 6 min
-            logger.info(f"Audio is {total_dur/60:.0f}min — trimming to 5 min for voice extraction")
+            logger.info(f"Audio is {total_dur/60:.0f}min — trimming to 8 min for voice extraction")
             subprocess.run(
-                [FFMPEG, "-y", "-i", str(source_wav), "-t", "300",
+                [FFMPEG, "-y", "-i", str(source_wav), "-t", "480",
                  "-acodec", "pcm_s16le", "-ar", "44100", "-ac", "2",
                  str(trimmed)],
                 capture_output=True, timeout=120,
@@ -232,11 +232,11 @@ class VoiceCloner:
                     vocals_path = candidates[0]
                     logger.info("Demucs vocal separation successful")
 
-                    # Light cleanup — trim to first 5 min (enough for reference extraction)
+                    # Light cleanup — trim to 8 min
                     cleaned = self.TEMP_DIR / "vocals_clean.wav"
                     subprocess.run(
                         [FFMPEG, "-y", "-i", str(vocals_path),
-                         "-t", "300",  # First 5 minutes only
+                         "-t", "480",  # First 8 minutes
                          "-af", "highpass=f=80,lowpass=f=12000,afftdn=nf=-20:nt=w,loudnorm=I=-16:TP=-1.5:LRA=11",
                          str(cleaned)],
                         capture_output=True, timeout=300,
@@ -253,17 +253,17 @@ class VoiceCloner:
     # ════════════════════════════════════════════════════════════
 
     def _whisper_transcribe(self, audio_path: Path) -> list[dict]:
-        """Transcribe first 5 min with Whisper — returns timestamped segments."""
+        """Transcribe first 8 min with Whisper — returns timestamped segments."""
         try:
             import warnings
             warnings.filterwarnings("ignore")
             import os
             os.environ['HF_HUB_DISABLE_SYMLINKS_WARNING'] = '1'
 
-            # Trim to first 5 min before transcription (saves huge time on long videos)
+            # Trim to 8 min before transcription
             trimmed = self.TEMP_DIR / "whisper_input.wav"
             subprocess.run(
-                [FFMPEG, "-y", "-i", str(audio_path), "-t", "300",
+                [FFMPEG, "-y", "-i", str(audio_path), "-t", "480",
                  "-ac", "1", "-ar", "16000", str(trimmed)],
                 capture_output=True, timeout=120,
             )
@@ -441,7 +441,7 @@ class VoiceCloner:
 
                 # Find best contiguous group (close in time)
                 mood_segs.sort(key=lambda s: s["start"])
-                best_group = self._find_best_contiguous_group(mood_segs, min_duration=8, max_duration=60)
+                best_group = self._find_best_contiguous_group(mood_segs, min_duration=8, max_duration=120)
 
                 if not best_group:
                     # Use single best segment for questions
@@ -548,14 +548,15 @@ class VoiceCloner:
     # ════════════════════════════════════════════════════════════
 
     def _extract_main_reference(self, vocals_path: Path, mood_segments: dict, whisper_segments: list) -> dict:
-        """Extract the best main reference (prefer calm, 30-60s)."""
+        """Extract the best main reference (prefer calm, up to 120s for variety)."""
         # Use calm segment if available and long enough
         if "calm" in mood_segments and mood_segments["calm"]["duration"] >= 20:
             return mood_segments["calm"]
 
-        # Otherwise find best 60s window with most speech
+        # Otherwise find best 120s window with most speech
+        # Longer reference = more pitch/pacing variety for Fish Speech to learn from
         total_dur = self._get_duration(vocals_path)
-        target = min(60, total_dur)
+        target = min(120, total_dur)
 
         best_start = 0
         best_speech = 0
