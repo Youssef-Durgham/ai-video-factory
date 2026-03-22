@@ -7,11 +7,49 @@ All UI text in Arabic (MSA).
 import json
 import logging
 import os
+import re
 import threading
 from pathlib import Path
 from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, CallbackQueryHandler, MessageHandler, filters
+
+
+def _parse_time(t: str) -> float:
+    """Parse 'm:ss' or 'ss' to seconds. E.g. '1:30' → 90, '45' → 45."""
+    t = t.strip()
+    parts = t.split(":")
+    if len(parts) == 2:
+        return int(parts[0]) * 60 + int(parts[1])
+    elif len(parts) == 3:
+        return int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
+    return int(t)
+
+
+def _fmt_time(sec: float) -> str:
+    """Format seconds as m:ss."""
+    m = int(sec) // 60
+    s = int(sec) % 60
+    return f"{m}:{s:02d}"
+
+
+def _parse_time_ranges(text: str) -> list[tuple[float, float]]:
+    """Parse '0:30-2:00, 5:15-8:00' → [(30, 120), (315, 480)]."""
+    ranges = []
+    for part in re.split(r'[,،\n]', text):
+        part = part.strip()
+        if not part:
+            continue
+        match = re.match(r'([\d:]+)\s*[-–—]\s*([\d:]+)', part)
+        if match:
+            try:
+                start = _parse_time(match.group(1))
+                end = _parse_time(match.group(2))
+                if end > start:
+                    ranges.append((start, end))
+            except (ValueError, IndexError):
+                continue
+    return ranges
 
 logger = logging.getLogger(__name__)
 
@@ -1911,13 +1949,26 @@ async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         )
         return
 
-    if user_data.get("voice_clone_state") == "awaiting_start_time":
-        # User specifies when narrator starts (in seconds)
-        try:
-            start_sec = int(update.message.text.strip())
-            user_data["voice_clone_start_sec"] = start_sec
-        except ValueError:
-            user_data["voice_clone_start_sec"] = 0
+    if user_data.get("voice_clone_state") == "awaiting_timestamps":
+        # User sends narrator time ranges: "0:30-2:00, 5:15-8:00"
+        raw = update.message.text.strip()
+        ranges = _parse_time_ranges(raw)
+        
+        if not ranges:
+            await update.message.reply_text(
+                "❌ صيغة غير صحيحة.\n\n"
+                "أرسل بهذا الشكل:\n"
+                "<code>0:30-2:00</code>\n"
+                "أو عدة مقاطع:\n"
+                "<code>0:30-2:00, 5:15-8:00</code>",
+                parse_mode="HTML",
+            )
+            return
+
+        user_data["voice_clone_ranges"] = ranges
+        total_sec = sum(e - s for s, e in ranges)
+        ranges_str = ", ".join(f"{_fmt_time(s)}-{_fmt_time(e)}" for s, e in ranges)
+        
         user_data["voice_clone_state"] = "selecting_categories"
         user_data["voice_clone_categories"] = []
 
@@ -1928,8 +1979,9 @@ async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         buttons.append([InlineKeyboardButton("✅ تأكيد الاختيار", callback_data="vcat_confirm")])
 
         await update.message.reply_text(
-            "✅ تم.\n\n🎭 <b>اختر أنواع المحتوى لهذا الصوت:</b>\n"
-            "<i>اضغط على الأنواع المناسبة ثم اضغط تأكيد</i>",
+            f"✅ تم — <b>{len(ranges)} مقطع</b> ({total_sec:.0f} ثانية)\n"
+            f"⏱️ {ranges_str}\n\n"
+            "🎭 <b>اختر أنواع المحتوى:</b>",
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(buttons),
         )
@@ -1937,22 +1989,21 @@ async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
 
     if user_data.get("voice_clone_state") == "awaiting_name":
         user_data["voice_clone_name"] = update.message.text.strip()
-        user_data["voice_clone_state"] = "awaiting_start_time"
+        user_data["voice_clone_state"] = "awaiting_timestamps"
 
         await update.message.reply_text(
             "✅ تم.\n\n"
-            "⏱️ <b>متى يبدأ المعلق الرئيسي بالكلام؟</b>\n\n"
-            "أرسل الوقت بالثواني (مثال: <code>0</code> أو <code>30</code> أو <code>120</code>)\n\n"
-            "<i>💡 إذا الفيديو يبدأ بمقدمة أو ضيف، حدد وقت بداية المعلق الرئيسي.\n"
-            "إذا المعلق يبدأ من البداية، أرسل 0</i>",
+            "⏱️ <b>حدد مقاطع المعلق الرئيسي:</b>\n\n"
+            "أرسل بداية ونهاية كل مقطع فيه صوت المعلق:\n\n"
+            "مقطع واحد:\n"
+            "<code>0:30-2:00</code>\n\n"
+            "عدة مقاطع (تجاوز الضيوف):\n"
+            "<code>0:30-2:00, 5:15-8:00, 10:00-12:30</code>\n\n"
+            "<i>💡 الصيغة: دقائق:ثواني-دقائق:ثواني\n"
+            "مثال: 1:30 = دقيقة و30 ثانية</i>",
             parse_mode="HTML",
         )
         return
-
-    if False:  # Old code removed — this block prevents duplicate
-        pass
-
-    if user_data.get("voice_clone_state") == "selecting_categories" and not user_data.get("voice_clone_categories_shown"):
 
         from src.phase5_production.voice_cloner import VOICE_CATEGORIES
         buttons = []
@@ -1978,8 +2029,9 @@ async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         url = user_data.pop("voice_clone_url", "")
         name = user_data.pop("voice_clone_name", "")
         category = user_data.pop("voice_clone_category", "documentary")
-        start_sec = user_data.pop("voice_clone_start_sec", 0)
+        time_ranges = user_data.pop("voice_clone_ranges", [(0, 480)])
         user_data.pop("voice_clone_state", None)
+        user_data.pop("voice_clone_start_sec", None)
 
         await update.message.reply_text(
             "⏳ <b>جاري استخراج الصوت وإنشاء الملف الصوتي...</b>\n\n"
@@ -1994,7 +2046,7 @@ async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
                 from src.phase5_production.voice_cloner import VoiceCloner
                 cloner = VoiceCloner()
                 from src.phase5_production.voice_cloner import VOICE_CATEGORIES
-                profile = cloner.clone_from_youtube(url, voice_id, name, category=category, narrator_start_sec=start_sec)
+                profile = cloner.clone_from_youtube(url, voice_id, name, category=category, narrator_ranges=time_ranges)
                 cat_label = VOICE_CATEGORIES.get(category, category)
 
                 # Check mood references

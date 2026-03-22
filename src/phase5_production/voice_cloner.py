@@ -88,7 +88,7 @@ class VoiceCloner:
         self.VOICES_DIR.mkdir(parents=True, exist_ok=True)
         self.EMBEDDINGS_DIR.mkdir(parents=True, exist_ok=True)
 
-    def clone_from_youtube(self, url: str, voice_id: str, name: str, category: str = "documentary", narrator_start_sec: int = 0) -> VoiceProfile:
+    def clone_from_youtube(self, url: str, voice_id: str, name: str, category: str = "documentary", narrator_ranges: list = None) -> VoiceProfile:
         """Full pipeline: YouTube URL → multi-sample voice profiles."""
         if self.TEMP_DIR.exists():
             shutil.rmtree(self.TEMP_DIR, ignore_errors=True)
@@ -99,8 +99,10 @@ class VoiceCloner:
             logger.info(f"Downloading audio from {url}")
             self._download_audio(url)
 
-            # 2. Convert to WAV (starting from narrator_start_sec)
-            source_wav = self._convert_to_wav(start_sec=narrator_start_sec)
+            # 2. Convert to WAV — extract only narrator ranges
+            if not narrator_ranges:
+                narrator_ranges = [(0, 480)]
+            source_wav = self._convert_to_wav(ranges=narrator_ranges)
 
             # 3. Separate vocals (demucs double-pass)
             vocals_path = self._separate_vocals(source_wav)
@@ -178,7 +180,8 @@ class VoiceCloner:
             capture_output=True, text=True, timeout=300, check=True,
         )
 
-    def _convert_to_wav(self, start_sec: int = 0) -> Path:
+    def _convert_to_wav(self, ranges: list = None) -> Path:
+        """Convert downloaded audio to WAV, extracting only narrator time ranges."""
         downloaded = None
         for ext in ["opus", "m4a", "webm", "mp3", "wav", "ogg"]:
             candidates = list(self.TEMP_DIR.glob(f"source*.{ext}"))
@@ -193,12 +196,58 @@ class VoiceCloner:
             else:
                 raise RuntimeError("yt-dlp did not produce audio")
 
+        if not ranges or len(ranges) == 1:
+            # Single range or no range — simple extract
+            start = ranges[0][0] if ranges else 0
+            duration = (ranges[0][1] - ranges[0][0]) if ranges else 480
+            source_wav = self.TEMP_DIR / "source.wav"
+            ss_args = ["-ss", str(start)] if start > 0 else []
+            logger.info(f"Extracting narrator audio: {start}s → {start + duration}s")
+            subprocess.run(
+                [FFMPEG, "-y", *ss_args, "-i", str(downloaded),
+                 "-t", str(duration),
+                 "-acodec", "pcm_s16le", "-ar", "44100", "-ac", "2",
+                 str(source_wav)],
+                capture_output=True, timeout=120, check=True,
+            )
+            return source_wav
+
+        # Multiple ranges — extract each, then concatenate
+        parts = []
+        for i, (start, end) in enumerate(ranges):
+            part_path = self.TEMP_DIR / f"part_{i:02d}.wav"
+            duration = end - start
+            logger.info(f"Extracting range {i+1}/{len(ranges)}: {start}s → {end}s ({duration}s)")
+            subprocess.run(
+                [FFMPEG, "-y", "-ss", str(start), "-i", str(downloaded),
+                 "-t", str(duration),
+                 "-acodec", "pcm_s16le", "-ar", "44100", "-ac", "2",
+                 str(part_path)],
+                capture_output=True, timeout=120, check=True,
+            )
+            if part_path.exists():
+                parts.append(part_path)
+
+        if not parts:
+            raise RuntimeError("Failed to extract any ranges")
+
+        if len(parts) == 1:
+            source_wav = self.TEMP_DIR / "source.wav"
+            parts[0].rename(source_wav)
+            return source_wav
+
+        # Concatenate all parts
+        concat_list = self.TEMP_DIR / "concat.txt"
+        with open(concat_list, "w") as f:
+            for p in parts:
+                f.write(f"file '{p}'\n")
+
         source_wav = self.TEMP_DIR / "source.wav"
-        # Start from narrator_start_sec — skip intro/guests at beginning
-        ss_args = ["-ss", str(start_sec)] if start_sec > 0 else []
-        logger.info(f"Converting to WAV (start={start_sec}s)")
+        total_dur = sum(e - s for s, e in ranges)
+        logger.info(f"Concatenating {len(parts)} parts ({total_dur:.0f}s total narrator audio)")
         subprocess.run(
-            [FFMPEG, "-y", *ss_args, "-i", str(downloaded),
+            [FFMPEG, "-y", "-f", "concat", "-safe", "0",
+             "-i", str(concat_list),
              "-acodec", "pcm_s16le", "-ar", "44100", "-ac", "2",
              str(source_wav)],
             capture_output=True, timeout=120, check=True,
