@@ -552,18 +552,26 @@ class VoiceGenerator:
                 references = [{"audio": ref_audio_bytes, "text": ref_text}]
             logger.info(f"Using voice profile '{voice_profile.voice_id}' (ref_id={reference_id})")
 
-        # Use directed parameters if provided (from VoiceDirector)
-        temperature = kwargs.get("temperature", 0.7)
-        top_p = kwargs.get("top_p", 0.7)
-        repetition_penalty = kwargs.get("repetition_penalty", 1.2)
+        # ── Preprocess Arabic text for better pronunciation ──
+        from src.phase5_production.arabic_text_processor import process_arabic_for_tts
+        processed_text = process_arabic_for_tts(text)
+
+        # TTS parameters tuned for Arabic documentary narration
+        # Lower temperature = more stable/consistent pronunciation
+        # Lower top_p = more focused token selection (less hallucination)
+        # Higher repetition_penalty can hurt Arabic natural flow
+        # Smaller chunk_length = better for Arabic (shorter attention window)
+        temperature = kwargs.get("temperature", 0.3)
+        top_p = kwargs.get("top_p", 0.6)
+        repetition_penalty = kwargs.get("repetition_penalty", 1.05)
 
         request_data = {
-            "text": text,
+            "text": processed_text,
             "references": references,
             "reference_id": reference_id,
             "format": "wav",
-            "max_new_tokens": 2048,
-            "chunk_length": 200,
+            "max_new_tokens": 4096,       # More tokens for Arabic (longer sequences)
+            "chunk_length": 100,           # Smaller chunks = better Arabic pronunciation
             "top_p": top_p,
             "repetition_penalty": repetition_penalty,
             "temperature": temperature,
