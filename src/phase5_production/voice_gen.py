@@ -739,18 +739,15 @@ class VoiceGenerator:
         """
         # Audio processing chain — documentary broadcast voice:
         #
-        # 1. Pitch: -0.5 semitone (deeper = authority/weight)
+        # 1. Pitch: -0.5 semitone (deeper = authority)
         # 2. Highpass 80Hz: remove rumble
         # 3. Warmth: +2dB at 200Hz (chest resonance)
         # 4. Presence: +1.5dB at 3kHz (clarity)
-        # 5. Surgical de-esser: NARROW band notch at 5.5-7.5kHz
-        #    Fish Speech Arabic سين artifacts live at 5500-7500Hz
-        #    Using TWO narrow notches instead of wide shelf (preserves air)
-        # 6. Anti-metallic: -2dB at 9kHz (removes digital "ringing")
-        # 7. Subtle saturation via soft-knee compressor (adds warmth/grit)
-        #    Low ratio + slow attack = preserves transients, adds body
-        #    This simulates slight "vocal fry" / analog warmth
-        # 8. Loudness norm: -16 LUFS broadcast standard
+        # 5. De-esser: narrow notches at 5.8kHz and 7.2kHz
+        # 6. Anti-metallic: -2dB at 9kHz
+        # 7. Soft compressor (warmth/body)
+        # 8. afade on silence boundaries (prevents hard clipping at word endings)
+        # 9. Loudness norm: -16 LUFS
         af_chain = (
             "asetrate=44100*0.9716,"
             "aresample=44100,"
@@ -761,6 +758,7 @@ class VoiceGenerator:
             "equalizer=f=7200:t=q:w=0.8:g=-4,"
             "equalizer=f=9000:t=q:w=1:g=-2,"
             "acompressor=threshold=-30dB:ratio=1.5:attack=50:release=300:makeup=1dB:knee=6,"
+            "agate=threshold=0.003:ratio=2:attack=5:release=80,"
             "loudnorm=I=-16:TP=-1.5:LRA=11"
         )
         subprocess.run(

@@ -172,11 +172,13 @@ def process_arabic_for_tts(text: str) -> str:
             text
         )
 
-    # 5b. Slow down struggle/effort words (comma before + after = slower delivery)
+    # 5b. Slow down struggle/effort words — ellipsis BEFORE only (not after)
+    # Using comma after was causing clipping and breaking مضاف+مضاف إليه
+    # Ellipsis before = pause then the word flows naturally into what follows
     for word in SLOW_WORDS:
         text = re.sub(
-            rf'([^\،])\s+({re.escape(word)})\s+',
-            rf'\1، \2، ',
+            rf'([^\.\،\s])\s+({re.escape(word)})',
+            rf'\1... \2',
             text
         )
 
@@ -218,7 +220,22 @@ def process_arabic_for_tts(text: str) -> str:
             processed.append(sent)
     text = '...'.join(processed)
 
-    # 8. Clean up
+    # 8. Protect مضاف+مضاف إليه (idafa) — remove pauses between them
+    # These are compound phrases that must flow as one unit
+    # Pattern: word + pause + ال-word → remove pause
+    text = re.sub(r'(\w)\s*[،\.]{2,}\s+(ال\w)', r'\1 \2', text)
+    # Also: common idafa pairs that should never be split
+    idafa_pairs = [
+        ("صراع", "إرادات"), ("حرب", "أهلية"), ("نظام", "بيئي"),
+        ("تنوع", "بيولوجي"), ("تغير", "مناخي"), ("ثورة", "صناعية"),
+        ("حقوق", "إنسان"), ("منظمة", "دولية"), ("طاقة", "نووية"),
+        ("سلاح", "دمار"), ("أسلحة", "كيميائية"), ("قوات", "مسلحة"),
+    ]
+    for w1, w2 in idafa_pairs:
+        # Remove any pause between the pair
+        text = re.sub(rf'{re.escape(w1)}\s*[،\.]+\s*{re.escape(w2)}', f'{w1} {w2}', text)
+
+    # 9. Clean up
     text = re.sub(r'\.{4,}', '...', text)  # Max 3 dots
     text = re.sub(r'\.\.\.\s*\.\.\.', '...', text)  # Remove double ellipsis
     text = re.sub(r'،\s*،', '،', text)  # Remove double commas
