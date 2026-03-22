@@ -30,6 +30,63 @@ def _notify(text: str):
         pass
 
 
+def _get_telegram_creds():
+    """Get bot token and chat ID from env or config."""
+    import os
+    bot_token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+    chat_id = os.environ.get("TELEGRAM_CHAT_ID", "")
+    if not bot_token or not chat_id:
+        try:
+            from src.core.config import load_config
+            cfg = load_config()
+            tg = cfg.get("settings", {}).get("telegram", {})
+            bot_token = bot_token or tg.get("bot_token", "")
+            chat_id = chat_id or tg.get("admin_chat_id") or tg.get("chat_id", "")
+        except Exception:
+            pass
+    return bot_token, chat_id
+
+
+def _send_audio_preview(job_id: str, audio_path: str, caption: str):
+    """Send an audio file to Telegram for preview."""
+    try:
+        import requests
+        bot_token, chat_id = _get_telegram_creds()
+        if not bot_token or not chat_id:
+            return
+        api = f"https://api.telegram.org/bot{bot_token}"
+        cap = f"{caption}\n🆔 <code>{job_id}</code>"
+        with open(audio_path, "rb") as f:
+            requests.post(f"{api}/sendAudio", data={
+                "chat_id": chat_id, "caption": cap, "parse_mode": "HTML",
+            }, files={"audio": (Path(audio_path).name, f, "audio/mpeg")}, timeout=60)
+    except Exception as e:
+        logger.warning(f"Failed to send audio preview: {e}")
+
+
+def _send_video_preview(job_id: str, video_path: str, caption: str):
+    """Send a video file to Telegram for preview."""
+    try:
+        import requests
+        bot_token, chat_id = _get_telegram_creds()
+        if not bot_token or not chat_id:
+            return
+        api = f"https://api.telegram.org/bot{bot_token}"
+        cap = f"{caption}\n🆔 <code>{job_id}</code>"
+        file_size = Path(video_path).stat().st_size
+        # Telegram limit: 50MB for bots
+        if file_size > 50 * 1024 * 1024:
+            _notify(f"⚠️ الفيديو كبير ({file_size/1024/1024:.0f}MB) — ما يتحمّل على تلگرام")
+            return
+        with open(video_path, "rb") as f:
+            requests.post(f"{api}/sendVideo", data={
+                "chat_id": chat_id, "caption": cap, "parse_mode": "HTML",
+                "supports_streaming": "true",
+            }, files={"video": (Path(video_path).name, f, "video/mp4")}, timeout=120)
+    except Exception as e:
+        logger.warning(f"Failed to send video preview: {e}")
+
+
 # ═══════════════════════════════════════════════════════════════
 # Phase 1: Research
 # ═══════════════════════════════════════════════════════════════
@@ -1201,6 +1258,11 @@ class MusicPhase(BasePhase):
 
             _notify(f"✅ موسيقى — {result.method} ({result.duration_sec:.0f}s)")
             logger.info(f"Music complete for {job_id}: {result.mood} ({result.method}, {result.duration_sec:.0f}s)")
+
+            # Send music to Telegram for preview
+            if result.audio_path and Path(result.audio_path).exists():
+                _send_audio_preview(job_id, result.audio_path, f"🎵 الموسيقى — {result.mood} ({result.duration_sec:.0f}s)")
+
             return PhaseResult(success=True, score=8.0)
         finally:
             gen.unload_model()
@@ -1575,6 +1637,14 @@ class SFXPhase(BasePhase):
             success_count = sum(1 for r in results if r.success)
             _notify(f"✅ المؤثرات — {success_count}/{len(scenes)} نجحت")
             logger.info(f"SFX complete for {job_id}: {success_count}/{len(scenes)}")
+
+            # Send a few SFX samples to Telegram
+            sent = 0
+            for r in results:
+                if r.success and r.audio_path and Path(r.audio_path).exists() and sent < 3:
+                    _send_audio_preview(job_id, r.audio_path, f"🔊 مؤثر — {', '.join(r.matched_tags[:3]) if r.matched_tags else r.method}")
+                    sent += 1
+
             return PhaseResult(success=True, score=8.0)
         finally:
             gen.unload_model()
@@ -1598,6 +1668,11 @@ class ComposePhase(BasePhase):
             return PhaseResult(success=False, blocked=True, reason=f"Composition failed: {result.error}")
 
         logger.info(f"Compose complete for {job_id}: {result.video_path} ({result.duration_sec:.0f}s)")
+
+        # Send final video to Telegram
+        if result.video_path and Path(result.video_path).exists():
+            _send_video_preview(job_id, result.video_path, f"🎬 الفيديو النهائي ({result.duration_sec:.0f}s)")
+
         return PhaseResult(success=True, score=9.0)
 
 
