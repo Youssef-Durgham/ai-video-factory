@@ -1,13 +1,14 @@
 """
-Arabic Text Processor for TTS — improves pronunciation quality.
+Arabic Text Processor for TTS — improves pacing, pauses, and emphasis.
 
-Fish Speech S2-Pro struggles with Arabic because:
-1. No diacritics (tashkeel) → wrong vowelization → wrong pronunciation
-2. Numbers/dates not converted to Arabic words
-3. Abbreviations not expanded
-4. Punctuation not optimized for TTS pauses
+Fish Speech S2-Pro doesn't support SSML, but responds to:
+- Ellipsis (...) → creates natural pauses/breathing
+- Period (.) → sentence boundary pause
+- Comma (،) → clause pause
+- Question mark (؟) → rising intonation
+- Exclamation (!) → emphasis
 
-This module preprocesses Arabic text to maximize TTS accuracy.
+This module preprocesses Arabic text to maximize natural delivery.
 """
 
 import re
@@ -76,59 +77,30 @@ def _number_to_arabic(n: int) -> str:
 
 
 # ════════════════════════════════════════════════════════════════
-# Common abbreviations and symbols
+# Abbreviations
 # ════════════════════════════════════════════════════════════════
 
 ABBREVIATIONS = {
-    "km": "كيلومتر",
-    "km²": "كيلومتر مربع",
-    "m": "متر",
-    "cm": "سنتيمتر",
-    "mm": "مليمتر",
-    "kg": "كيلوغرام",
-    "g": "غرام",
-    "°C": "درجة مئوية",
-    "°F": "درجة فهرنهايت",
-    "%": "بالمئة",
-    "$": "دولار",
-    "€": "يورو",
-    "£": "جنيه",
-    "AD": "ميلادي",
-    "BC": "قبل الميلاد",
-    "CEO": "الرئيس التنفيذي",
-    "AI": "الذكاء الاصطناعي",
-    "USA": "الولايات المتحدة",
-    "UK": "المملكة المتحدة",
-    "UN": "الأمم المتحدة",
-    "NASA": "ناسا",
-    "DNA": "الحمض النووي",
+    "km": "كيلومتر", "km²": "كيلومتر مربع", "m": "متر",
+    "cm": "سنتيمتر", "mm": "مليمتر", "kg": "كيلوغرام",
+    "°C": "درجة مئوية", "°F": "درجة فهرنهايت",
+    "%": "بالمئة", "$": "دولار", "€": "يورو",
+    "AD": "ميلادي", "BC": "قبل الميلاد",
+    "AI": "الذكاء الاصطناعي", "DNA": "الحمض النووي",
+    "USA": "الولايات المتحدة", "UK": "المملكة المتحدة",
+    "UN": "الأمم المتحدة", "NASA": "ناسا",
 }
 
 # ════════════════════════════════════════════════════════════════
-# Common mispronunciation fixes
+# Emphasis words (documentary style)
 # ════════════════════════════════════════════════════════════════
 
-# Words that Fish Speech commonly mispronounces — add phonetic hints
-PRONUNCIATION_FIXES = {
-    # Hamza issues
-    "إلى": "إِلَى",
-    # Note: أن/إن have multiple forms — leave without tashkeel
-    # to let Fish Speech use context. Adding wrong tashkeel is worse
-    # than none. Only add tashkeel to unambiguous words.
-    # Diacritics disabled — Fish Speech handles context better without them
-    # Adding wrong diacritics makes pronunciation WORSE not better
-    # Common documentary words
-    "العلماء": "العُلَمَاءُ",
-    "الأرض": "الأَرْضِ",
-    "المحيط": "المُحِيطِ",
-    "الجزيرة": "الجَزِيرَةِ",
-    "القرن": "القَرْنِ",
-    "تاريخ": "تَارِيخِ",
-    "اكتشاف": "اكْتِشَافِ",
-    "الحضارة": "الحَضَارَةِ",
-    "الطبيعة": "الطَّبِيعَةِ",
-    "الحقيقة": "الحَقِيقَةِ",
-    "المعرفة": "المَعْرِفَةِ",
+# Words that should have emphasis — add ellipsis before for dramatic pause
+EMPHASIS_WORDS = {
+    "تختفي", "مفاجئ", "لغز", "غامض", "غريب", "اكتشاف", "خطير",
+    "مذهل", "لا يصدق", "مستحيل", "سر", "غموض", "حقيقة",
+    "صادم", "مرعب", "عجيب", "نادر", "فريد", "تاريخي",
+    "كارثة", "انفجار", "اختفاء", "ظهور", "تحول",
 }
 
 
@@ -138,15 +110,10 @@ PRONUNCIATION_FIXES = {
 
 def process_arabic_for_tts(text: str) -> str:
     """
-    Preprocess Arabic text for optimal TTS pronunciation.
+    Preprocess Arabic text for natural documentary narration.
     
-    Steps:
-    1. Expand abbreviations and symbols
-    2. Convert numbers to Arabic words
-    3. Apply pronunciation fixes (common words with diacritics)
-    4. Normalize punctuation for natural pauses
-    5. Add breath marks for long sentences
-    6. Clean up whitespace
+    NO diacritics injection — Fish Speech handles context better without.
+    Focus on: numbers, abbreviations, pacing, pauses, emphasis.
     """
     if not text or not text.strip():
         return text
@@ -155,75 +122,65 @@ def process_arabic_for_tts(text: str) -> str:
 
     # 1. Expand abbreviations
     for abbr, expansion in ABBREVIATIONS.items():
-        # Word boundary matching
         text = re.sub(rf'\b{re.escape(abbr)}\b', expansion, text)
 
     # 2. Convert numbers to words
-    # Year patterns: keep as-is if 4 digits (e.g., 2024)
     def _replace_number(m):
-        num_str = m.group(0)
         try:
-            n = int(num_str)
-            # Years: say as number
-            if 1000 <= n <= 2100:
-                return _number_to_arabic(n)
-            # Percentages are handled separately
+            n = int(m.group(0))
             return _number_to_arabic(n)
         except ValueError:
-            return num_str
+            return m.group(0)
 
-    # Replace standalone numbers
     text = re.sub(r'\b\d+\b', _replace_number, text)
 
-    # 3. Percentage: "50%" → "خمسون بالمئة"
+    # 3. Percentage
     text = re.sub(r'(\d+)\s*%', lambda m: _number_to_arabic(int(m.group(1))) + " بالمئة", text)
 
-    # 4. Apply pronunciation fixes (add diacritics to common words)
-    # Only apply to words without existing diacritics
-    DIACRITICS = '\u064B\u064C\u064D\u064E\u064F\u0650\u0651\u0652\u0653\u0654\u0655'
-    for word, fixed in PRONUNCIATION_FIXES.items():
-        # Only replace if the word doesn't already have diacritics
-        pattern = rf'\b{re.escape(word)}\b'
-        def _fix_word(m):
-            matched = m.group(0)
-            if any(c in DIACRITICS for c in matched):
-                return matched  # Already has diacritics
-            return fixed
-        text = re.sub(pattern, _fix_word, text)
+    # 4. Normalize punctuation
+    text = text.replace('—', '...')  # Em-dash → dramatic pause
+    text = text.replace('–', '،')    # En-dash → comma pause
 
-    # 5. Normalize punctuation for TTS pauses
-    # Double period → single with pause
-    text = re.sub(r'\.{2,}', '...', text)
-    # Em-dash → comma (pause)
-    text = text.replace('—', '،')
-    text = text.replace('–', '،')
-    # Don't auto-insert commas — can cause unnatural pauses
+    # 5. Add dramatic pauses before emphasis words (documentary style)
+    for word in EMPHASIS_WORDS:
+        # Add ellipsis before emphasis word for dramatic pause
+        # Only if not already preceded by punctuation
+        text = re.sub(
+            rf'([^\.\!\؟،\s])\s+({re.escape(word)})',
+            rf'\1... \2',
+            text
+        )
 
-    # 6. Add breath marks for long sentences (split at 30+ words without punctuation)
-    sentences = text.split('.')
+    # 6. Extend sentence pauses for documentary pacing
+    # Single period → period + space (Fish Speech reads this as longer pause)
+    # Add ellipsis between sentences for breathing room
+    text = re.sub(r'\.\s+', '... ', text)
+    
+    # 7. Break very long sentences (>20 words) with breathing pause
+    sentences = text.split('...')
     processed = []
     for sent in sentences:
         words = sent.split()
-        if len(words) > 25:
-            # Insert comma every ~15 words at a natural break
-            result_words = []
-            for i, w in enumerate(words):
-                result_words.append(w)
-                if (i + 1) % 15 == 0 and i < len(words) - 3:
-                    if not w.endswith(('،', '؟', '!', '.')):
-                        result_words.append('،')
-            processed.append(' '.join(result_words))
+        if len(words) > 20:
+            mid = len(words) // 2
+            # Find nearest natural break (conjunction)
+            best = mid
+            for i in range(max(0, mid-4), min(len(words), mid+4)):
+                if words[i] in ('و', 'أو', 'ثم', 'لكن', 'حيث', 'إذ', 'بينما', 'حتى'):
+                    best = i
+                    break
+            part1 = ' '.join(words[:best])
+            part2 = ' '.join(words[best:])
+            processed.append(f"{part1}... {part2}")
         else:
             processed.append(sent)
-    text = '.'.join(processed)
+    text = '...'.join(processed)
 
-    # 7. Clean up whitespace
+    # 8. Clean up
+    text = re.sub(r'\.{4,}', '...', text)  # Max 3 dots
     text = re.sub(r'\s+', ' ', text).strip()
-    # Remove double punctuation
-    text = re.sub(r'،\s*،', '،', text)
-    text = re.sub(r'\.\s*\.', '.', text)
 
     if text != original:
-        logger.debug(f"Arabic TTS preprocessing applied ({len(original)} → {len(text)} chars)")
+        logger.debug(f"Arabic TTS preprocessing: {len(original)} → {len(text)} chars")
 
     return text
