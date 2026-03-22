@@ -478,26 +478,8 @@ class VoiceGenerator:
     # ─── Fish Speech Engine ────────────────────────────
 
     def _ensure_reference_uploaded(self, voice_profile) -> str:
-        """Upload voice reference to Fish Speech server if not already there. Returns reference_id."""
+        """Upload voice reference to Fish Speech server. Always re-uploads to ensure correct file."""
         ref_id = voice_profile.voice_id
-        
-        # Check if already uploaded
-        try:
-            r = self._session.get(f"{self.config.fish_speech_url}/v1/references/list", timeout=10)
-            if r.status_code == 200:
-                import ormsgpack as _omp
-                try:
-                    data = _omp.unpackb(r.content)
-                except Exception:
-                    try:
-                        data = r.json()
-                    except Exception:
-                        data = {}
-                if ref_id in data.get("reference_ids", data.get(b"reference_ids", [])):
-                    logger.info(f"Reference '{ref_id}' already on server")
-                    return ref_id
-        except Exception as e:
-            logger.warning(f"Failed to check references: {e}")
 
         # Upload reference with transcription text
         ref_audio_path = voice_profile.reference_audio
@@ -605,7 +587,7 @@ class VoiceGenerator:
             "repetition_penalty": repetition_penalty,
             "temperature": temperature,
             "streaming": False,
-            "use_memory_cache": "on" if reference_id else "off",
+            "use_memory_cache": "off",  # Disable cache — ensures correct reference is used every time
             "seed": None,
             "normalize": True,
         }
