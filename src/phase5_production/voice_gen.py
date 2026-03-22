@@ -478,7 +478,8 @@ class VoiceGenerator:
     # ─── Fish Speech Engine ────────────────────────────
 
     def _ensure_reference_uploaded(self, voice_profile) -> str:
-        """Upload voice reference to Fish Speech server. Always re-uploads to ensure correct file."""
+        """Upload voice reference to Fish Speech server. Deletes old + re-uploads."""
+        from datetime import datetime
         ref_id = voice_profile.voice_id
 
         # Upload reference with transcription text
@@ -511,8 +512,18 @@ class VoiceGenerator:
             audio_bytes = f.read()
 
         try:
+            # Delete old reference first (ensures fresh upload)
+            try:
+                self._session.post(
+                    f"{self.config.fish_speech_url}/v1/references/delete",
+                    json={"id": ref_id},
+                    timeout=10,
+                )
+                logger.debug(f"Deleted old reference '{ref_id}' from server")
+            except Exception:
+                pass  # May not exist, that's fine
+
             import ormsgpack
-            # Use multipart form upload
             r = self._session.post(
                 f"{self.config.fish_speech_url}/v1/references/add",
                 files={"audio": (f"{ref_id}.wav", audio_bytes, "audio/wav")},
@@ -523,8 +534,19 @@ class VoiceGenerator:
                 logger.info(f"Reference '{ref_id}' uploaded successfully")
                 return ref_id
             elif r.status_code == 409:
-                logger.info(f"Reference '{ref_id}' already exists (409)")
-                return ref_id
+                # Still exists after delete? Try with different ID
+                new_id = f"{ref_id}_{int(datetime.now().timestamp()) % 10000}"
+                logger.warning(f"Reference '{ref_id}' still exists, trying '{new_id}'")
+                r2 = self._session.post(
+                    f"{self.config.fish_speech_url}/v1/references/add",
+                    files={"audio": (f"{new_id}.wav", audio_bytes, "audio/wav")},
+                    data={"id": new_id, "text": ref_text},
+                    timeout=30,
+                )
+                if r2.status_code in (200, 201):
+                    logger.info(f"Reference '{new_id}' uploaded as fallback")
+                    return new_id
+                return ref_id  # Use existing as last resort
             else:
                 logger.error(f"Failed to upload reference: {r.status_code} {r.text[:200]}")
         except Exception as e:
