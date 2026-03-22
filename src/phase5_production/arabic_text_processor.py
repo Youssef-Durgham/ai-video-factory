@@ -96,12 +96,27 @@ ABBREVIATIONS = {
 # ════════════════════════════════════════════════════════════════
 
 # Words that should have emphasis — add ellipsis before for dramatic pause
+# Dramatic/mystery words → pause before (...)
 EMPHASIS_WORDS = {
     "تختفي", "مفاجئ", "لغز", "غامض", "غريب", "اكتشاف", "خطير",
     "مذهل", "لا يصدق", "مستحيل", "سر", "غموض", "حقيقة",
     "صادم", "مرعب", "عجيب", "نادر", "فريد", "تاريخي",
     "كارثة", "انفجار", "اختفاء", "ظهور", "تحول",
+    "لا مثيل", "لم يسبق",
 }
+
+# Struggle/effort words → comma before AND after for slower delivery
+SLOW_WORDS = {
+    "تضطر", "تكافح", "تهاجر", "تعاني", "تواجه", "تصارع",
+    "تبتلع", "تنهار", "تتحطم", "تغرق", "تتلاشى", "تقاوم",
+    "تجتاح", "تدمر", "تزلزل", "تفتك", "تجبر", "ترغم",
+}
+
+# Peak/climax phrases → stretched with ellipsis for rising then falling tone
+CLIMAX_PHRASES = [
+    "لا مثيل له", "لم يسبق له مثيل", "غير مسبوق", "لأول مرة",
+    "أكبر من أي", "أعظم من", "الأضخم في التاريخ",
+]
 
 
 # ════════════════════════════════════════════════════════════════
@@ -145,15 +160,25 @@ def process_arabic_for_tts(text: str) -> str:
     text = text.replace('—', '...')  # Em-dash → dramatic pause
     text = text.replace('–', '،')    # En-dash → comma pause
 
-    # 5. Add dramatic pauses before emphasis words (documentary style)
+    # 5a. Dramatic pauses before emphasis words
     for word in EMPHASIS_WORDS:
-        # Add ellipsis before emphasis word for dramatic pause
-        # Only if not already preceded by punctuation
         text = re.sub(
             rf'([^\.\!\؟،\s])\s+({re.escape(word)})',
             rf'\1... \2',
             text
         )
+
+    # 5b. Slow down struggle/effort words (comma before + after = slower delivery)
+    for word in SLOW_WORDS:
+        text = re.sub(
+            rf'([^\،])\s+({re.escape(word)})\s+',
+            rf'\1، \2، ',
+            text
+        )
+
+    # 5c. Climax phrases — add rising pause before, falling after
+    for phrase in CLIMAX_PHRASES:
+        text = text.replace(phrase, f"... {phrase}.")
 
     # 6. Extend sentence pauses for documentary pacing
     # Single period → period + space (Fish Speech reads this as longer pause)
@@ -182,6 +207,8 @@ def process_arabic_for_tts(text: str) -> str:
 
     # 8. Clean up
     text = re.sub(r'\.{4,}', '...', text)  # Max 3 dots
+    text = re.sub(r'\.\.\.\s*\.\.\.', '...', text)  # Remove double ellipsis
+    text = re.sub(r'،\s*،', '،', text)  # Remove double commas
     text = re.sub(r'\s+', ' ', text).strip()
 
     if text != original:

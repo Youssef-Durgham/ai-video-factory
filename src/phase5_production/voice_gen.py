@@ -719,13 +719,21 @@ class VoiceGenerator:
         - Loudness normalization: -16 LUFS (broadcast standard)
         - No EQ/compression — keeps Fish Speech's natural quality
         """
-        # asetrate: lower pitch by ~3% (0.5 semitone = factor 0.9716)
-        # aresample: restore original sample rate after pitch shift
-        # loudnorm: consistent volume across all clips
+        # Audio processing chain (order matters):
+        # 1. asetrate: pitch down 0.5 semitone (deeper = documentary authority)
+        # 2. aresample: restore sample rate after pitch shift
+        # 3. highshelf: gentle de-ess (-3dB above 6kHz, tames س ص ش sibilance)
+        # 4. loudnorm: broadcast standard -16 LUFS (consistent across clips)
+        af_chain = (
+            "asetrate=44100*0.9716,"
+            "aresample=44100,"
+            "equalizer=f=7000:t=h:w=3000:g=-3,"
+            "loudnorm=I=-16:TP=-1.5:LRA=11"
+        )
         subprocess.run(
             [
                 FFMPEG, "-y", "-i", wav_path,
-                "-af", "asetrate=44100*0.9716,aresample=44100,loudnorm=I=-16:TP=-1.5:LRA=11",
+                "-af", af_chain,
                 "-codec:a", "libmp3lame", "-qscale:a", "2",
                 mp3_path,
             ],
