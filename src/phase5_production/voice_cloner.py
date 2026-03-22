@@ -259,75 +259,89 @@ class VoiceCloner:
 
     def _identify_narrator_segments(self, audio_path: Path, segments: list) -> list[dict]:
         """
-        Identify which Whisper segments belong to the narrator (not guests).
+        Identify narrator by using first 30s as voice anchor.
         
-        Strategy: The narrator is the DOMINANT speaker — most consistent voice.
-        1. Extract voice embedding (MFCC centroid) per segment
-        2. Cluster into speakers by embedding similarity
-        3. The largest cluster = narrator
+        Key insight: The narrator ALWAYS speaks at the beginning of the episode.
+        Guests come later. So first 30s = narrator's voice fingerprint.
         
-        No external diarization library needed — pure librosa + numpy.
+        Method:
+        1. Extract MFCC embedding from first 30s (= narrator anchor)
+        2. Extract MFCC embedding per segment
+        3. Compare each segment to anchor (cosine similarity)
+        4. High similarity (>0.85) = narrator, low = guest
         """
         try:
             import numpy as np
             import librosa
+            from numpy.linalg import norm
 
             y, sr = librosa.load(str(audio_path), sr=22050)
 
-            # Extract MFCC features per segment
-            embeddings = []
-            valid_segments = []
+            # ── Step 1: Build narrator anchor from first 30s ──
+            # The narrator speaks at the beginning — this is our "gold" reference
+            anchor_end = min(30 * sr, len(y))
+            anchor_chunk = y[:anchor_end]
+            anchor_mfcc = librosa.feature.mfcc(y=anchor_chunk, sr=sr, n_mfcc=20)
+            anchor_embedding = np.mean(anchor_mfcc, axis=1)
+
+            logger.info(f"Narrator anchor: first {anchor_end/sr:.0f}s of audio")
+
+            # ── Step 2: Extract embedding per segment ──
+            narrator_segments = []
+            guest_segments = []
+
             for seg in segments:
                 start_sample = int(seg["start"] * sr)
                 end_sample = min(int(seg["end"] * sr), len(y))
-                if end_sample - start_sample < sr * 0.5:
+                if end_sample - start_sample < sr * 0.3:
                     continue
 
                 chunk = y[start_sample:end_sample]
-                mfcc = librosa.feature.mfcc(y=chunk, sr=sr, n_mfcc=13)
-                # Use mean MFCC as voice embedding
+                mfcc = librosa.feature.mfcc(y=chunk, sr=sr, n_mfcc=20)
                 embedding = np.mean(mfcc, axis=1)
-                embeddings.append(embedding)
-                valid_segments.append(seg)
 
-            if len(embeddings) < 3:
-                return segments  # Too few segments to cluster
+                # ── Step 3: Compare to anchor ──
+                cos_sim = np.dot(embedding, anchor_embedding) / (
+                    norm(embedding) * norm(anchor_embedding) + 1e-8
+                )
 
-            embeddings = np.array(embeddings)
-
-            # Simple clustering: compute pairwise cosine similarity
-            from numpy.linalg import norm
-            n = len(embeddings)
-            sim_matrix = np.zeros((n, n))
-            for i in range(n):
-                for j in range(n):
-                    cos_sim = np.dot(embeddings[i], embeddings[j]) / (
-                        norm(embeddings[i]) * norm(embeddings[j]) + 1e-8
-                    )
-                    sim_matrix[i][j] = cos_sim
-
-            # Assign speakers: segment with highest average similarity to others = narrator
-            avg_sim = np.mean(sim_matrix, axis=1)
-
-            # The narrator's segments are most similar to each other
-            # (consistent voice vs guests who appear briefly)
-            # Threshold: segments with avg_sim > median are narrator
-            median_sim = np.median(avg_sim)
-            narrator_mask = avg_sim >= median_sim
-
-            narrator_segments = [seg for seg, is_narrator in zip(valid_segments, narrator_mask) if is_narrator]
-            guest_segments = [seg for seg, is_narrator in zip(valid_segments, narrator_mask) if not is_narrator]
+                if cos_sim >= 0.85:
+                    narrator_segments.append(seg)
+                else:
+                    guest_segments.append(seg)
 
             narrator_dur = sum(s["end"] - s["start"] for s in narrator_segments)
             guest_dur = sum(s["end"] - s["start"] for s in guest_segments)
 
             logger.info(
-                f"Speaker separation: narrator={narrator_dur:.0f}s ({len(narrator_segments)} segs), "
+                f"Speaker separation (anchor method): "
+                f"narrator={narrator_dur:.0f}s ({len(narrator_segments)} segs), "
                 f"guests={guest_dur:.0f}s ({len(guest_segments)} segs)"
             )
 
+            # If too strict (narrator < 30s), lower threshold and retry
             if narrator_dur < 30:
-                logger.warning("Narrator detection found too little speech, using all segments")
+                logger.warning("Anchor threshold too strict, lowering to 0.75")
+                narrator_segments = []
+                for seg in segments:
+                    start_sample = int(seg["start"] * sr)
+                    end_sample = min(int(seg["end"] * sr), len(y))
+                    if end_sample - start_sample < sr * 0.3:
+                        continue
+                    chunk = y[start_sample:end_sample]
+                    mfcc = librosa.feature.mfcc(y=chunk, sr=sr, n_mfcc=20)
+                    embedding = np.mean(mfcc, axis=1)
+                    cos_sim = np.dot(embedding, anchor_embedding) / (
+                        norm(embedding) * norm(anchor_embedding) + 1e-8
+                    )
+                    if cos_sim >= 0.75:
+                        narrator_segments.append(seg)
+
+                narrator_dur = sum(s["end"] - s["start"] for s in narrator_segments)
+                logger.info(f"After lowering threshold: narrator={narrator_dur:.0f}s")
+
+            if narrator_dur < 20:
+                logger.warning("Still too little narrator speech, using all segments")
                 return segments
 
             return narrator_segments
