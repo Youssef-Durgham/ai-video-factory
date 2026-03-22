@@ -1253,34 +1253,16 @@ class ImageQAPhase(BasePhase):
 
         # Save rubrics to DB
         for r in results:
-            det_dict = {
-                "blur_score": r.deterministic.blur_score,
-                "is_blurry": r.deterministic.is_blurry,
-                "is_black": r.deterministic.is_black,
-                "is_white": r.deterministic.is_white,
-                "resolution_ok": r.deterministic.resolution_ok,
-                "file_ok": r.deterministic.file_ok,
-            }
-            rubric_dict = {}
-            if r.rubric:
-                rubric_dict = {
-                    "semantic_match": r.rubric.semantic_match,
-                    "visual_elements": r.rubric.visual_elements,
-                    "composition": r.rubric.composition,
-                    "style_fit": r.rubric.style_fit,
-                    "artifact_severity": r.rubric.artifact_severity,
-                }
-
             self.db.save_rubric(
                 job_id=job_id, scene_index=r.scene_index,
                 asset_type="image", check_phase="image_qa",
-                attempt=1, deterministic=det_dict,
-                rubric_scores=rubric_dict,
+                attempt=1, deterministic=r.scores,
+                rubric_scores=r.scores,
                 weighted_score=r.weighted_score,
                 verdict=r.verdict.lower(),
-                flags=r.deterministic.fail_reasons,
+                flags=r.details,
                 hard_fail=r.error if r.verdict == "FAIL" else None,
-                model="qwen3.5:27b",
+                model="deterministic",
             )
 
             # Mark scenes needing regen
