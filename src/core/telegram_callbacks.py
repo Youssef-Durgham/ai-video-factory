@@ -1911,10 +1911,48 @@ async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         )
         return
 
-    if user_data.get("voice_clone_state") == "awaiting_name":
-        user_data["voice_clone_name"] = update.message.text.strip()
+    if user_data.get("voice_clone_state") == "awaiting_start_time":
+        # User specifies when narrator starts (in seconds)
+        try:
+            start_sec = int(update.message.text.strip())
+            user_data["voice_clone_start_sec"] = start_sec
+        except ValueError:
+            user_data["voice_clone_start_sec"] = 0
         user_data["voice_clone_state"] = "selecting_categories"
         user_data["voice_clone_categories"] = []
+
+        from src.phase5_production.voice_cloner import VOICE_CATEGORIES
+        buttons = []
+        for cat_id, cat_label in VOICE_CATEGORIES.items():
+            buttons.append([InlineKeyboardButton(f"⬜ {cat_label}", callback_data=f"vcat_{cat_id}")])
+        buttons.append([InlineKeyboardButton("✅ تأكيد الاختيار", callback_data="vcat_confirm")])
+
+        await update.message.reply_text(
+            "✅ تم.\n\n🎭 <b>اختر أنواع المحتوى لهذا الصوت:</b>\n"
+            "<i>اضغط على الأنواع المناسبة ثم اضغط تأكيد</i>",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(buttons),
+        )
+        return
+
+    if user_data.get("voice_clone_state") == "awaiting_name":
+        user_data["voice_clone_name"] = update.message.text.strip()
+        user_data["voice_clone_state"] = "awaiting_start_time"
+
+        await update.message.reply_text(
+            "✅ تم.\n\n"
+            "⏱️ <b>متى يبدأ المعلق الرئيسي بالكلام؟</b>\n\n"
+            "أرسل الوقت بالثواني (مثال: <code>0</code> أو <code>30</code> أو <code>120</code>)\n\n"
+            "<i>💡 إذا الفيديو يبدأ بمقدمة أو ضيف، حدد وقت بداية المعلق الرئيسي.\n"
+            "إذا المعلق يبدأ من البداية، أرسل 0</i>",
+            parse_mode="HTML",
+        )
+        return
+
+    if False:  # Old code removed — this block prevents duplicate
+        pass
+
+    if user_data.get("voice_clone_state") == "selecting_categories" and not user_data.get("voice_clone_categories_shown"):
 
         from src.phase5_production.voice_cloner import VOICE_CATEGORIES
         buttons = []
@@ -1940,6 +1978,7 @@ async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         url = user_data.pop("voice_clone_url", "")
         name = user_data.pop("voice_clone_name", "")
         category = user_data.pop("voice_clone_category", "documentary")
+        start_sec = user_data.pop("voice_clone_start_sec", 0)
         user_data.pop("voice_clone_state", None)
 
         await update.message.reply_text(
@@ -1955,7 +1994,7 @@ async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
                 from src.phase5_production.voice_cloner import VoiceCloner
                 cloner = VoiceCloner()
                 from src.phase5_production.voice_cloner import VOICE_CATEGORIES
-                profile = cloner.clone_from_youtube(url, voice_id, name, category=category)
+                profile = cloner.clone_from_youtube(url, voice_id, name, category=category, narrator_start_sec=start_sec)
                 cat_label = VOICE_CATEGORIES.get(category, category)
 
                 # Check mood references

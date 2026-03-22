@@ -88,7 +88,7 @@ class VoiceCloner:
         self.VOICES_DIR.mkdir(parents=True, exist_ok=True)
         self.EMBEDDINGS_DIR.mkdir(parents=True, exist_ok=True)
 
-    def clone_from_youtube(self, url: str, voice_id: str, name: str, category: str = "documentary") -> VoiceProfile:
+    def clone_from_youtube(self, url: str, voice_id: str, name: str, category: str = "documentary", narrator_start_sec: int = 0) -> VoiceProfile:
         """Full pipeline: YouTube URL → multi-sample voice profiles."""
         if self.TEMP_DIR.exists():
             shutil.rmtree(self.TEMP_DIR, ignore_errors=True)
@@ -99,8 +99,8 @@ class VoiceCloner:
             logger.info(f"Downloading audio from {url}")
             self._download_audio(url)
 
-            # 2. Convert to WAV
-            source_wav = self._convert_to_wav()
+            # 2. Convert to WAV (starting from narrator_start_sec)
+            source_wav = self._convert_to_wav(start_sec=narrator_start_sec)
 
             # 3. Separate vocals (demucs double-pass)
             vocals_path = self._separate_vocals(source_wav)
@@ -178,7 +178,7 @@ class VoiceCloner:
             capture_output=True, text=True, timeout=300, check=True,
         )
 
-    def _convert_to_wav(self) -> Path:
+    def _convert_to_wav(self, start_sec: int = 0) -> Path:
         downloaded = None
         for ext in ["opus", "m4a", "webm", "mp3", "wav", "ogg"]:
             candidates = list(self.TEMP_DIR.glob(f"source*.{ext}"))
@@ -194,8 +194,11 @@ class VoiceCloner:
                 raise RuntimeError("yt-dlp did not produce audio")
 
         source_wav = self.TEMP_DIR / "source.wav"
+        # Start from narrator_start_sec — skip intro/guests at beginning
+        ss_args = ["-ss", str(start_sec)] if start_sec > 0 else []
+        logger.info(f"Converting to WAV (start={start_sec}s)")
         subprocess.run(
-            [FFMPEG, "-y", "-i", str(downloaded),
+            [FFMPEG, "-y", *ss_args, "-i", str(downloaded),
              "-acodec", "pcm_s16le", "-ar", "44100", "-ac", "2",
              str(source_wav)],
             capture_output=True, timeout=120, check=True,
