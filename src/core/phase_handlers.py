@@ -1224,20 +1224,36 @@ class VoicePhase(BasePhase):
         topic = job.get("topic", "—") if job else "—"
         default_id = cloner.get_default_voice_id()
 
+        from src.phase5_production.voice_cloner import VOICE_CATEGORIES
+
         text = (
             f"🎙️ <b>اختر الشخصية الصوتية لهذا المشروع:</b>\n\n"
             f"📝 <b>الموضوع:</b> {topic}\n"
             f"🆔 <code>{job_id}</code>\n"
         )
 
+        # Group voices by category, show category headers
         buttons = []
+        voices_by_cat = {}
         for v in voices:
-            label = f"👤 {v.name}"
-            if v.voice_id == default_id:
-                label += " ⭐ افتراضي"
-            buttons.append([{"text": label, "callback_data": f"vs_{job_id}_{v.voice_id}"}])
+            cat = getattr(v, 'category', 'documentary')
+            voices_by_cat.setdefault(cat, []).append(v)
 
-        buttons.append([{"text": "🤖 صوت Edge TTS الافتراضي", "callback_data": f"vs_{job_id}___edge_tts__"}])
+        # Show documentary first (most common), then others
+        cat_order = ["documentary", "film", "audiobook", "horror", "news",
+                     "kids", "podcast", "promo", "educational"]
+        for cat in cat_order:
+            cat_voices = voices_by_cat.get(cat, [])
+            if not cat_voices:
+                continue
+            cat_label = VOICE_CATEGORIES.get(cat, cat)
+            # Category header as non-clickable text (use a separator)
+            buttons.append([{"text": f"── {cat_label} ──", "callback_data": f"noop_{cat}"}])
+            for v in cat_voices:
+                label = f"👤 {v.name}"
+                if v.voice_id == default_id:
+                    label += " ⭐"
+                buttons.append([{"text": label, "callback_data": f"vs_{job_id}_{v.voice_id}"}])
 
         keyboard = {"inline_keyboard": buttons}
         requests.post(f"{api}/sendMessage", json={

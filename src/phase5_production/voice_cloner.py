@@ -54,6 +54,20 @@ DEMUCS = [sys.executable, "-m", "demucs"]
 logger.info(f"Voice tools: ffmpeg={FFMPEG}, yt-dlp=python -m yt_dlp, demucs=python -m demucs")
 
 
+# Voice categories — determines which voices appear for which content type
+VOICE_CATEGORIES = {
+    "documentary": "🎬 وثائقي",
+    "film": "🎥 فيلم",
+    "audiobook": "📖 كتب صوتية",
+    "horror": "👻 رعب",
+    "news": "📺 أخبار",
+    "kids": "🧒 أطفال",
+    "podcast": "🎙️ بودكاست",
+    "promo": "📢 إعلاني",
+    "educational": "🎓 تعليمي",
+}
+
+
 @dataclass
 class VoiceProfile:
     voice_id: str
@@ -62,6 +76,7 @@ class VoiceProfile:
     source_url: str
     created_at: str
     duration_sec: float
+    category: str = "documentary"  # Default category
 
 
 class VoiceCloner:
@@ -73,7 +88,7 @@ class VoiceCloner:
         self.VOICES_DIR.mkdir(parents=True, exist_ok=True)
         self.EMBEDDINGS_DIR.mkdir(parents=True, exist_ok=True)
 
-    def clone_from_youtube(self, url: str, voice_id: str, name: str) -> VoiceProfile:
+    def clone_from_youtube(self, url: str, voice_id: str, name: str, category: str = "documentary") -> VoiceProfile:
         """Full pipeline: YouTube URL → multi-sample voice profiles."""
         if self.TEMP_DIR.exists():
             shutil.rmtree(self.TEMP_DIR, ignore_errors=True)
@@ -128,6 +143,7 @@ class VoiceCloner:
                 source_url=url,
                 created_at=datetime.utcnow().isoformat(),
                 duration_sec=duration,
+                category=category,
             )
 
             meta_path = self.VOICES_DIR / f"{voice_id}.json"
@@ -588,6 +604,10 @@ class VoiceCloner:
             except Exception as e:
                 logger.warning(f"Failed to load voice profile {meta_file}: {e}")
         return profiles
+
+    def list_voices_by_category(self, category: str) -> list[VoiceProfile]:
+        """List voices filtered by category."""
+        return [v for v in self.list_voices() if v.category == category]
 
     def get_voice(self, voice_id: str) -> Optional[VoiceProfile]:
         meta_path = self.VOICES_DIR / f"{voice_id}.json"

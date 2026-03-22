@@ -319,6 +319,24 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     voice_id = ""
                 await _voice_select(query, job_id, voice_id)
 
+        # No-op (category headers in voice selection)
+        elif data.startswith("noop_"):
+            pass  # Do nothing
+
+        # Voice category selection (during clone flow)
+        elif data.startswith("vcat_"):
+            cat = data[5:]
+            context.user_data["voice_clone_category"] = cat
+            context.user_data["voice_clone_state"] = "awaiting_id"
+            from src.phase5_production.voice_cloner import VOICE_CATEGORIES
+            cat_label = VOICE_CATEGORIES.get(cat, cat)
+            await query.edit_message_text(
+                f"✅ النوع: {cat_label}\n\n"
+                "🔤 اختر معرّف للصوت (بالإنجليزي، بدون مسافات):\n"
+                '<i>مثال: narrator_ahmed</i>',
+                parse_mode="HTML",
+            )
+
         # Voice management callbacks
         elif data == "settings_voices":
             await _settings_voices(query)
@@ -1865,12 +1883,18 @@ async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
 
     if user_data.get("voice_clone_state") == "awaiting_name":
         user_data["voice_clone_name"] = update.message.text.strip()
-        user_data["voice_clone_state"] = "awaiting_id"
+        user_data["voice_clone_state"] = "awaiting_category"
+
+        # Show category selection buttons
+        from src.phase5_production.voice_cloner import VOICE_CATEGORIES
+        buttons = []
+        for cat_id, cat_label in VOICE_CATEGORIES.items():
+            buttons.append([InlineKeyboardButton(cat_label, callback_data=f"vcat_{cat_id}")])
+
         await update.message.reply_text(
-            "✅ تم.\n\n"
-            "🔤 اختر معرّف للصوت (بالإنجليزي، بدون مسافات):\n"
-            '<i>مثال: narrator_ahmed</i>',
+            "✅ تم.\n\n🎭 <b>اختر نوع المحتوى لهذا الصوت:</b>",
             parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(buttons),
         )
         return
 
@@ -1883,6 +1907,7 @@ async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
 
         url = user_data.pop("voice_clone_url", "")
         name = user_data.pop("voice_clone_name", "")
+        category = user_data.pop("voice_clone_category", "documentary")
         user_data.pop("voice_clone_state", None)
 
         await update.message.reply_text(
@@ -1897,11 +1922,28 @@ async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             try:
                 from src.phase5_production.voice_cloner import VoiceCloner
                 cloner = VoiceCloner()
-                profile = cloner.clone_from_youtube(url, voice_id, name)
+                from src.phase5_production.voice_cloner import VOICE_CATEGORIES
+                profile = cloner.clone_from_youtube(url, voice_id, name, category=category)
+                cat_label = VOICE_CATEGORIES.get(category, category)
+
+                # Check mood references
+                meta_path = cloner.VOICES_DIR / f"{voice_id}.json"
+                moods_found = []
+                if meta_path.exists():
+                    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                    moods_found = list(meta.get("mood_references", {}).keys())
+
+                mood_text = ""
+                if moods_found:
+                    mood_labels = {"calm": "🧘 هادئ", "dramatic": "🔥 درامي", "question": "❓ تساؤل"}
+                    mood_text = "\n🎭 أنماط مستخرجة: " + " | ".join(mood_labels.get(m, m) for m in moods_found)
+
                 send_telegram_sync(
                     f"✅ <b>تم إنشاء الصوت بنجاح!</b>\n\n"
                     f"👤 <b>{profile.name}</b> ({profile.voice_id})\n"
-                    f"⏱️ مدة العينة: {profile.duration_sec:.1f} ثانية\n\n"
+                    f"🎭 النوع: {cat_label}\n"
+                    f"⏱️ مدة العينة: {profile.duration_sec:.1f} ثانية"
+                    f"{mood_text}\n\n"
                     f"اذهب إلى ⚙️ الإعدادات → 🎙️ إدارة الأصوات لاختبار الصوت.",
                 )
             except Exception as e:
