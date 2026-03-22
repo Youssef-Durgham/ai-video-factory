@@ -92,6 +92,7 @@ class VoiceGenerator:
         self.config = config or VoiceGenConfig()
         self._session = requests.Session()
         self._fish_available = False
+        self._server_start_attempted = False  # Prevent multiple starts
 
     # ─── Server Management ─────────────────────────────
 
@@ -125,6 +126,12 @@ class VoiceGenerator:
             self._fish_available = True
             return True
 
+        # Don't try to start multiple times
+        if self._server_start_attempted:
+            logger.warning("Fish Speech server start already attempted — not retrying")
+            return False
+
+        self._server_start_attempted = True
         logger.info("Fish Speech not running — starting it...")
         max_wait = max_wait or self.config.startup_timeout
 

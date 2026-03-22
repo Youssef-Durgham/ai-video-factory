@@ -228,7 +228,6 @@ class GPUMemoryManager:
         # 1. Unload Ollama models
         if HAS_REQUESTS:
             try:
-                # List running models and unload all
                 resp = requests.get(f"{self.ollama_host}/api/ps", timeout=10)
                 if resp.status_code == 200:
                     data = resp.json()
@@ -247,14 +246,31 @@ class GPUMemoryManager:
         # 2. Kill ComfyUI python processes
         self._kill_comfyui_processes()
 
-        # 3. Flush PyTorch CUDA cache
+        # 3. Kill Fish Speech server instances (they leak VRAM if left running)
+        self._kill_fish_speech_processes()
+
+        # 4. Flush PyTorch CUDA cache
         self._flush_vram()
 
-        # 4. Wait for VRAM to release
-        time.sleep(2)
+        # 5. Wait for VRAM to release
+        time.sleep(3)
 
         free = self._get_free_vram()
         logger.info(f"VRAM after nuclear cleanup: {free:.1f}GB free")
+
+    def _kill_fish_speech_processes(self):
+        """Kill ALL Fish Speech server instances to free VRAM."""
+        try:
+            result = subprocess.run(
+                ["powershell", "-Command",
+                 "Get-WmiObject Win32_Process | "
+                 "Where-Object { $_.CommandLine -match 'api_server.*checkpoint|fish.*speech.*server' } | "
+                 "ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"],
+                capture_output=True, timeout=10,
+            )
+            logger.info("Fish Speech processes killed")
+        except Exception as e:
+            logger.debug(f"Fish Speech kill: {e}")
 
     def _kill_comfyui_processes(self):
         """Kill ComfyUI worker python processes (not the Desktop app UI)."""
@@ -271,7 +287,7 @@ class GPUMemoryManager:
             logger.debug(f"ComfyUI kill: {e}")
 
     def _emergency_kill_gpu_processes(self):
-        """Last resort: kill Ollama models + ComfyUI + flush everything."""
+        """Last resort: kill Ollama models + ComfyUI + Fish Speech + flush everything."""
         logger.warning("Emergency GPU process kill triggered")
 
         # Unload all Ollama
@@ -280,8 +296,9 @@ class GPUMemoryManager:
         except Exception:
             pass
 
-        # Kill ComfyUI
+        # Kill ComfyUI + Fish Speech
         self._kill_comfyui_processes()
+        self._kill_fish_speech_processes()
 
         # Flush PyTorch
         self._flush_vram()
