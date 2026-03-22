@@ -282,12 +282,25 @@ Reply ONLY with JSON:
                     ],
                     "stream": False,
                     "format": "json",
-                    "options": {"temperature": 0.3, "num_predict": 256},
+                    "options": {"temperature": 0.3, "num_predict": 512},
+                    "think": False,  # Disable thinking mode — we need direct JSON output
                 },
                 timeout=120,
             )
             resp.raise_for_status()
-            raw = resp.json()["message"]["content"]
+            msg = resp.json().get("message", {})
+            raw = msg.get("content", "")
+            # Qwen 3.5 uses thinking mode — content may be empty, answer in thinking
+            if not raw.strip():
+                thinking = msg.get("thinking", "")
+                # Try to extract JSON from thinking text
+                if thinking:
+                    import re
+                    json_match = re.search(r'\{[^{}]*"semantic_match"[^{}]*\}', thinking)
+                    if json_match:
+                        raw = json_match.group(0)
+                    else:
+                        logger.warning("Vision response empty (thinking mode, no JSON found)")
             elapsed = time.time() - start
             logger.debug(f"Vision rubric took {elapsed:.1f}s")
 
