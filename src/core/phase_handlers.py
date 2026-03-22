@@ -1090,17 +1090,53 @@ class VoicePhase(BasePhase):
                 continue
 
             logger.info(f"Generating voice {i + 1}/{total} (scene {idx})")
-            # Notify progress every 5 scenes (avoid spam)
             if i % 5 == 0:
                 _notify(f"🎙️ تعليق {i + 1}/{total}...")
 
-            result = gen.generate(
-                text=narration,
-                output_dir=output_dir,
-                filename=f"scene_{idx:03d}",
-                voice_id=voice_id,
-            )
-            results.append(result)
+            # Generate with QA check + smart retry
+            from src.phase5_production.voice_qa import VoiceQA, enhance_voice_audio, fix_text_for_retry
+            qa = VoiceQA()
+
+            best_result = None
+            best_accuracy = 0
+            current_text = narration
+
+            for attempt in range(3):  # Up to 3 attempts
+                result = gen.generate(
+                    text=current_text,
+                    output_dir=output_dir,
+                    filename=f"scene_{idx:03d}",
+                    voice_id=voice_id,
+                )
+
+                if not result.success or not result.audio_path:
+                    continue
+
+                # QA check with Whisper
+                qa_result = qa.check(result.audio_path, narration)
+                logger.info(f"Scene {idx} attempt {attempt+1}: accuracy={qa_result.accuracy:.0f}%")
+
+                if qa_result.accuracy > best_accuracy:
+                    best_accuracy = qa_result.accuracy
+                    best_result = result
+
+                if qa_result.passed:
+                    break  # Good enough
+                
+                # Fix text based on what was mispronounced
+                if qa_result.missing_words and attempt < 2:
+                    current_text = fix_text_for_retry(narration, qa_result.missing_words, attempt + 1)
+                    logger.info(f"Scene {idx}: retrying with fixed text (missing: {qa_result.missing_words[:5]})")
+
+            if best_result is None:
+                best_result = result  # Use last attempt even if failed
+
+            # Post-process audio (EQ, compression, normalization)
+            if best_result and best_result.success and best_result.audio_path:
+                enhance_voice_audio(best_result.audio_path)
+
+            results.append(best_result if best_result else result)
+            qa.unload()
 
         success_count = 0
         for scene, result in zip(scenes, results):
@@ -1110,7 +1146,7 @@ class VoicePhase(BasePhase):
                 success_count += 1
                 logger.info(f"Scene {idx} voice saved: {result.audio_path} ({result.engine}, {result.duration_sec}s)")
             else:
-                logger.error(f"Scene {idx} voice failed: {result.error}")
+                logger.error(f"Scene {idx} voice failed: {getattr(result, 'error', 'unknown')}")
 
         if success_count == 0:
             return PhaseResult(success=False, blocked=True, reason=f"All {total} voice generations failed")
