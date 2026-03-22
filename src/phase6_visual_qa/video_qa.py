@@ -277,8 +277,7 @@ class VideoQA:
             if has_source else "No source image provided."
         )
 
-        prompt = f"""/no_think
-You are a video QA reviewer for documentary production.
+        prompt = f"""You are a video QA reviewer for documentary production.
 I'm showing you {len(keyframes)} keyframes from a video clip{' and the source image' if has_source else ''}.
 
 {source_note}

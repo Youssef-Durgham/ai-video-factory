@@ -263,9 +263,7 @@ class ImageQA:
             return None
 
         elements_str = ", ".join(expected_elements) if expected_elements else "N/A"
-        # /no_think disables qwen3.5 thinking mode — forces direct JSON output
-        prompt = f"""/no_think
-You are a documentary image QA reviewer. Score this image on 5 axes (1-10 each).
+        prompt = f"""You are a documentary image QA reviewer. Score this image on 5 axes (1-10 each).
 
 Context:
 - Narration: {narration_text[:300]}
