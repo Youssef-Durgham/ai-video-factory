@@ -109,14 +109,19 @@ class VoiceCloner:
             logger.info("Transcribing with Whisper...")
             segments = self._whisper_transcribe(vocals_path)
 
-            # 5. Analyze energy to find different mood segments
+            # 5. Identify narrator segments (filter out guests)
+            logger.info("Identifying narrator voice...")
+            narrator_segments = self._identify_narrator_segments(vocals_path, segments)
+            logger.info(f"Narrator: {len(narrator_segments)}/{len(segments)} segments")
+
+            # 6. Analyze energy to find different mood segments (narrator only)
             logger.info("Analyzing energy for mood segments...")
-            mood_segments = self._find_mood_segments(vocals_path, segments)
+            mood_segments = self._find_mood_segments(vocals_path, narrator_segments)
 
-            # 6. Extract main reference (longest calm segment, ~30-60s)
-            main_ref = self._extract_main_reference(vocals_path, mood_segments, segments)
+            # 7. Extract main reference (narrator only, up to 120s)
+            main_ref = self._extract_main_reference(vocals_path, mood_segments, narrator_segments)
 
-            # 7. Save voice profile
+            # 8. Save voice profile
             final_audio = self.EMBEDDINGS_DIR / f"{voice_id}.wav"
             shutil.copy2(main_ref["path"], final_audio)
 
@@ -125,7 +130,7 @@ class VoiceCloner:
             lab_path.write_text(main_ref["text"], encoding="utf-8")
             logger.info(f"Main reference: {main_ref['duration']:.1f}s, mood={main_ref['mood']}")
 
-            # 8. Save mood-specific references (if found)
+            # 9. Save mood-specific references (if found)
             for mood, seg in mood_segments.items():
                 if mood == "calm":
                     continue  # Already saved as main
@@ -251,6 +256,85 @@ class VoiceCloner:
     # ════════════════════════════════════════════════════════════
     # Step 3: Whisper transcription (replaces YouTube subs)
     # ════════════════════════════════════════════════════════════
+
+    def _identify_narrator_segments(self, audio_path: Path, segments: list) -> list[dict]:
+        """
+        Identify which Whisper segments belong to the narrator (not guests).
+        
+        Strategy: The narrator is the DOMINANT speaker — most consistent voice.
+        1. Extract voice embedding (MFCC centroid) per segment
+        2. Cluster into speakers by embedding similarity
+        3. The largest cluster = narrator
+        
+        No external diarization library needed — pure librosa + numpy.
+        """
+        try:
+            import numpy as np
+            import librosa
+
+            y, sr = librosa.load(str(audio_path), sr=22050)
+
+            # Extract MFCC features per segment
+            embeddings = []
+            valid_segments = []
+            for seg in segments:
+                start_sample = int(seg["start"] * sr)
+                end_sample = min(int(seg["end"] * sr), len(y))
+                if end_sample - start_sample < sr * 0.5:
+                    continue
+
+                chunk = y[start_sample:end_sample]
+                mfcc = librosa.feature.mfcc(y=chunk, sr=sr, n_mfcc=13)
+                # Use mean MFCC as voice embedding
+                embedding = np.mean(mfcc, axis=1)
+                embeddings.append(embedding)
+                valid_segments.append(seg)
+
+            if len(embeddings) < 3:
+                return segments  # Too few segments to cluster
+
+            embeddings = np.array(embeddings)
+
+            # Simple clustering: compute pairwise cosine similarity
+            from numpy.linalg import norm
+            n = len(embeddings)
+            sim_matrix = np.zeros((n, n))
+            for i in range(n):
+                for j in range(n):
+                    cos_sim = np.dot(embeddings[i], embeddings[j]) / (
+                        norm(embeddings[i]) * norm(embeddings[j]) + 1e-8
+                    )
+                    sim_matrix[i][j] = cos_sim
+
+            # Assign speakers: segment with highest average similarity to others = narrator
+            avg_sim = np.mean(sim_matrix, axis=1)
+
+            # The narrator's segments are most similar to each other
+            # (consistent voice vs guests who appear briefly)
+            # Threshold: segments with avg_sim > median are narrator
+            median_sim = np.median(avg_sim)
+            narrator_mask = avg_sim >= median_sim
+
+            narrator_segments = [seg for seg, is_narrator in zip(valid_segments, narrator_mask) if is_narrator]
+            guest_segments = [seg for seg, is_narrator in zip(valid_segments, narrator_mask) if not is_narrator]
+
+            narrator_dur = sum(s["end"] - s["start"] for s in narrator_segments)
+            guest_dur = sum(s["end"] - s["start"] for s in guest_segments)
+
+            logger.info(
+                f"Speaker separation: narrator={narrator_dur:.0f}s ({len(narrator_segments)} segs), "
+                f"guests={guest_dur:.0f}s ({len(guest_segments)} segs)"
+            )
+
+            if narrator_dur < 30:
+                logger.warning("Narrator detection found too little speech, using all segments")
+                return segments
+
+            return narrator_segments
+
+        except Exception as e:
+            logger.warning(f"Speaker separation failed: {e}, using all segments")
+            return segments
 
     def _whisper_transcribe(self, audio_path: Path) -> list[dict]:
         """Transcribe first 8 min with Whisper — returns timestamped segments."""
