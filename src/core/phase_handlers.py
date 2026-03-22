@@ -76,8 +76,9 @@ class ResearchPhase(BasePhase):
                 ))
                 self.db.conn.commit()
                 return PhaseResult(
-                    success=True, score=0,
-                    details={"waiting_for_input": True, "topics_count": len(ranked)},
+                    success=False, blocked=True,
+                    reason="⏸️ بانتظار اختيار الموضوع",
+                    score=0,
                 )
 
             # Fallback: no topics at all — shouldn't happen
@@ -1100,11 +1101,11 @@ class VoicePhase(BasePhase):
             ]},
         }, timeout=10)
 
-        logger.info(f"Voice review sent to Telegram for {job_id}")
+        logger.info(f"Voice review sent to Telegram for {job_id}, BLOCKING pipeline until user approves")
         return PhaseResult(
-            success=True, phase="voice", score=0,
-            details={"status": "voice_review_requested", "waiting_for_input": True},
-            timestamp=datetime.utcnow().isoformat(),
+            success=False, blocked=True,
+            reason="⏸️ بانتظار مراجعة التعليق الصوتي",
+            score=0,
         )
 
     def _send_voice_selection(self, job_id, voices, cloner, bot_token, chat_id):
@@ -1137,11 +1138,11 @@ class VoicePhase(BasePhase):
             "reply_markup": keyboard,
         }, timeout=10)
 
-        logger.info(f"Voice selection sent to Telegram for {job_id}, pausing pipeline")
+        logger.info(f"Voice selection sent to Telegram for {job_id}, BLOCKING pipeline until user selects voice")
         return PhaseResult(
-            success=True, phase="voice", score=0,
-            details={"status": "voice_selection_requested", "waiting_for_input": True},
-            timestamp=datetime.utcnow().isoformat(),
+            success=False, blocked=True,
+            reason="⏸️ بانتظار اختيار المعلق الصوتي",
+            score=0,
         )
 
 
@@ -1632,11 +1633,9 @@ class ManualReviewPhase(BasePhase):
         logger.info(f"Manual review with {len(scenes)} scenes sent to Telegram for {job_id}")
 
         return PhaseResult(
-            success=True,
-            phase=self.phase_name,
+            success=False, blocked=True,
+            reason="⏸️ بانتظار المراجعة اليدوية",
             score=0,
-            details={"status": "review_requested", "scenes_sent": len(scenes), "waiting_for_input": True},
-            timestamp=datetime.utcnow().isoformat(),
         )
 
 class PublishPhase(BasePhase):
