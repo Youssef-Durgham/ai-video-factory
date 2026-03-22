@@ -115,16 +115,8 @@ PRONUNCIATION_FIXES = {
     # Note: أن/إن have multiple forms — leave without tashkeel
     # to let Fish Speech use context. Adding wrong tashkeel is worse
     # than none. Only add tashkeel to unambiguous words.
-    # Only unambiguous common words — words with ONE pronunciation
-    "هذا": "هَذَا",
-    "هذه": "هَذِهِ",
-    "الذي": "الَّذِي",
-    "التي": "الَّتِي",
-    "الذين": "الَّذِينَ",
-    "ثم": "ثُمَّ",
-    "هل": "هَلْ",
-    "لم": "لَمْ",
-    "لن": "لَنْ",
+    # Diacritics disabled — Fish Speech handles context better without them
+    # Adding wrong diacritics makes pronunciation WORSE not better
     # Common documentary words
     "العلماء": "العُلَمَاءُ",
     "الأرض": "الأَرْضِ",
