@@ -112,36 +112,19 @@ ABBREVIATIONS = {
 PRONUNCIATION_FIXES = {
     # Hamza issues
     "إلى": "إِلَى",
-    "أن": "أَنَّ",
-    "إن": "إِنَّ",
-    "أو": "أَوْ",
-    "أي": "أَيْ",
-    # Common words
+    # Note: أن/إن have multiple forms — leave without tashkeel
+    # to let Fish Speech use context. Adding wrong tashkeel is worse
+    # than none. Only add tashkeel to unambiguous words.
+    # Only unambiguous common words — words with ONE pronunciation
     "هذا": "هَذَا",
     "هذه": "هَذِهِ",
     "الذي": "الَّذِي",
     "التي": "الَّتِي",
     "الذين": "الَّذِينَ",
-    "لكن": "لَكِنَّ",
     "ثم": "ثُمَّ",
-    "حيث": "حَيْثُ",
-    "عند": "عِنْدَ",
-    "بين": "بَيْنَ",
-    "على": "عَلَى",
-    "من": "مِنْ",
-    "في": "فِي",
-    "عن": "عَنْ",
-    "كان": "كَانَ",
-    "كانت": "كَانَتْ",
-    "يكون": "يَكُونُ",
-    "تكون": "تَكُونُ",
-    "كل": "كُلُّ",
-    "بعض": "بَعْضُ",
-    "قد": "قَدْ",
+    "هل": "هَلْ",
     "لم": "لَمْ",
     "لن": "لَنْ",
-    "ما": "مَا",
-    "هل": "هَلْ",
     # Common documentary words
     "العلماء": "العُلَمَاءُ",
     "الأرض": "الأَرْضِ",
@@ -222,8 +205,7 @@ def process_arabic_for_tts(text: str) -> str:
     # Em-dash → comma (pause)
     text = text.replace('—', '،')
     text = text.replace('–', '،')
-    # Ensure comma before و العطف for natural flow
-    text = re.sub(r'([^،]) (و[اَ])', r'\1، \2', text)
+    # Don't auto-insert commas — can cause unnatural pauses
 
     # 6. Add breath marks for long sentences (split at 30+ words without punctuation)
     sentences = text.split('.')

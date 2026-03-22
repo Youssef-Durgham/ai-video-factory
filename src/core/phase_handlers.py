@@ -1013,28 +1013,56 @@ class VoicePhase(BasePhase):
             except Exception:
                 pass
 
+        # Check if voice review already approved → skip everything
+        voice_approved = review_state.get(f"voice_approved_{job_id}")
+        if voice_approved:
+            review_state.pop(f"voice_approved_{job_id}", None)
+            review_state_path.write_text(json.dumps(review_state, ensure_ascii=False, indent=2), encoding="utf-8")
+            logger.info(f"Voice already approved for {job_id}")
+            return PhaseResult(success=True, score=9.0)
+
+        # Check if voices already generated → skip to review
+        voice_dir = Path(f"output/{job_id}/voice")
+        existing_voices = list(voice_dir.glob("scene_*.mp3")) if voice_dir.exists() else []
+        if existing_voices and len(existing_voices) >= len(scenes) * 0.8:
+            logger.info(f"Voice already generated ({len(existing_voices)} files), skipping to review")
+            # Update DB with existing paths
+            from src.phase5_production.voice_gen import VoiceGenResult
+            results = []
+            for scene in scenes:
+                idx = scene.get("scene_index", 0)
+                vp = voice_dir / f"scene_{idx:03d}.mp3"
+                if vp.exists():
+                    self.db.update_scene_asset(job_id, idx, voice_path=str(vp))
+                    results.append(VoiceGenResult(success=True, audio_path=str(vp), duration_sec=0, engine="fish_speech"))
+                else:
+                    results.append(VoiceGenResult(success=False, error="File not found"))
+            # Send to review
+            bot_token, chat_id = self._get_telegram_creds()
+            if bot_token and chat_id:
+                return self._send_voice_review(job_id, scenes, results, str(voice_dir), bot_token, chat_id)
+            return PhaseResult(success=True, score=8.0)
+
+        # Get selected voice ID (from review_state or DB)
         selected_voice_id = review_state.pop(f"voice_selected_{job_id}", None)
         if selected_voice_id:
-            # Save cleaned state
             review_state_path.write_text(json.dumps(review_state, ensure_ascii=False, indent=2), encoding="utf-8")
+            # Save to DB so we don't lose it
+            self.db.conn.execute("UPDATE jobs SET selected_voice_id=? WHERE id=?", (selected_voice_id, job_id))
+            self.db.conn.commit()
         else:
-            # Check if voices exist → ask user to choose
+            # Check DB for previously selected voice
+            job = self.db.get_job(job_id)
+            selected_voice_id = job.get("selected_voice_id") if job else None
+
+        if not selected_voice_id:
+            # Ask user to choose voice
             cloner = VoiceCloner()
             voices = cloner.list_voices()
             if voices:
                 bot_token, chat_id = self._get_telegram_creds()
                 if bot_token and chat_id:
                     return self._send_voice_selection(job_id, voices, cloner, bot_token, chat_id)
-
-        # Check if voice review already approved
-        voice_approved = review_state.get(f"voice_approved_{job_id}")
-        if voice_approved:
-            # Already approved — clean up and return success
-            review_state.pop(f"voice_approved_{job_id}", None)
-            review_state_path.write_text(json.dumps(review_state, ensure_ascii=False, indent=2), encoding="utf-8")
-            score = 9.0
-            logger.info(f"Voice already approved for {job_id}")
-            return PhaseResult(success=True, score=score)
 
         # Generate voice with selected voice (or default/none)
         voice_id = selected_voice_id if selected_voice_id != "__edge_tts__" else None
