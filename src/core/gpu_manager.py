@@ -255,11 +255,20 @@ class GPUMemoryManager:
         if not HAS_REQUESTS:
             logger.warning("requests not installed — skipping ComfyUI check")
             return
-        resp = requests.get(f"{self.comfyui_host}/system_stats", timeout=10)
-        resp.raise_for_status()
+        try:
+            resp = requests.get(f"{self.comfyui_host}/system_stats", timeout=10)
+            resp.raise_for_status()
+        except Exception as e:
+            logger.warning(f"ComfyUI not available at {self.comfyui_host}: {e}")
+            logger.warning("ComfyUI model will be loaded on first use if/when ComfyUI starts")
 
     def _unload_comfyui(self):
-        """Tell ComfyUI to free all models from VRAM."""
+        """Free ComfyUI VRAM — send /free API then kill process if needed.
+        
+        ComfyUI Desktop often holds VRAM even after /free API call,
+        so we kill the python process to guarantee VRAM is released
+        for the next model (Ollama, AudioGen, etc.).
+        """
         if not HAS_REQUESTS:
             return
         try:
@@ -270,3 +279,20 @@ class GPUMemoryManager:
             )
         except Exception:
             pass
+
+        # Kill ComfyUI python process to guarantee VRAM release
+        # ComfyUI Desktop keeps VRAM allocated even after /free
+        try:
+            import subprocess as _sp
+            # Find and kill ComfyUI python processes (not the Desktop app itself)
+            result = _sp.run(
+                ["powershell", "-Command",
+                 "Get-WmiObject Win32_Process | Where-Object { $_.CommandLine -match 'ComfyUI.*resources' } | "
+                 "ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"],
+                capture_output=True, timeout=10,
+            )
+            logger.info("ComfyUI process killed to free VRAM")
+        except Exception as e:
+            logger.warning(f"Failed to kill ComfyUI process: {e}")
+        
+        time.sleep(3)  # Wait for VRAM to fully release
