@@ -294,24 +294,37 @@ Reply ONLY with JSON, no explanation:
                         }
                     ],
                     "stream": False,
-                    "format": "json",
-                    "options": {"temperature": 0.3, "num_predict": 512},
+                    "options": {"temperature": 0.3, "num_predict": 1024},
                 },
                 timeout=180,
             )
             resp.raise_for_status()
             msg = resp.json().get("message", {})
             raw = msg.get("content", "")
-            # Fallback: qwen3.5 thinking mode puts answer in thinking field
+            
+            # qwen3.5 with vision + format:json = empty content (known bug)
+            # Try content first, then thinking field, extract JSON from either
+            import re
+            all_text = raw
             if not raw.strip():
-                thinking = msg.get("thinking", "")
-                if thinking:
-                    import re
-                    json_match = re.search(r'\{[^{}]*"semantic_match"[^{}]*\}', thinking)
-                    if json_match:
-                        raw = json_match.group(0)
-                    else:
-                        logger.warning("Vision response empty (thinking mode, no JSON found)")
+                all_text = msg.get("thinking", "")
+
+            # Extract JSON object from text (may have surrounding explanation)
+            json_match = re.search(r'\{[^{}]*"semantic_match"\s*:\s*\d+[^{}]*\}', all_text)
+            if json_match:
+                raw = json_match.group(0)
+            elif not raw.strip():
+                # Last resort: try to extract any scores mentioned
+                scores = {}
+                for key in ["semantic_match", "visual_elements", "composition", "style_fit", "artifact_severity"]:
+                    m = re.search(rf'{key}["\s:]*(\d+)', all_text)
+                    if m:
+                        scores[key] = int(m.group(1))
+                if scores:
+                    raw = json.dumps(scores)
+                else:
+                    logger.warning("Vision response: no JSON found in content or thinking")
+
             elapsed = time.time() - start
             logger.debug(f"Vision rubric took {elapsed:.1f}s")
 

@@ -299,22 +299,31 @@ Reply ONLY with JSON:
                     "model": self.vision_model,
                     "messages": [{"role": "user", "content": prompt, "images": images_b64}],
                     "stream": False,
-                    "format": "json",
-                    "options": {"temperature": 0.3, "num_predict": 512},
+                    "options": {"temperature": 0.3, "num_predict": 1024},
                 },
                 timeout=180,
             )
             resp.raise_for_status()
             msg = resp.json().get("message", {})
             raw = msg.get("content", "")
-            # Qwen 3.5 thinking mode fallback
+            
+            import re
+            all_text = raw
             if not raw.strip():
-                thinking = msg.get("thinking", "")
-                if thinking:
-                    import re
-                    json_match = re.search(r'\{[^{}]*"motion_plausibility"[^{}]*\}', thinking)
-                    if json_match:
-                        raw = json_match.group(0)
+                all_text = msg.get("thinking", "")
+
+            json_match = re.search(r'\{[^{}]*"motion_plausibility"\s*:\s*\d+[^{}]*\}', all_text)
+            if json_match:
+                raw = json_match.group(0)
+            elif not raw.strip():
+                scores = {}
+                for key in ["motion_plausibility", "source_fidelity", "artifact_severity"]:
+                    m = re.search(rf'{key}["\s:]*(\d+)', all_text)
+                    if m:
+                        scores[key] = int(m.group(1))
+                if scores:
+                    raw = json.dumps(scores)
+
             logger.debug(f"Video vision rubric took {time.time()-start:.1f}s")
 
             data = json.loads(raw)
