@@ -196,16 +196,14 @@ class ImageQA:
                 f"complex={result.scores.get('complexity',0):.0f}]"
             )
 
-            # Live Telegram progress
-            try:
-                from src.core.telegram_callbacks import send_telegram_sync
-                done = len(results)
-                score_str = f"{result.weighted_score:.1f}"
-                send_telegram_sync(
-                    f"🔎 صورة {done}/{total} — {verdict_icon} {score_str}/10"
-                )
-            except Exception:
-                pass
+            # Live Telegram progress (every 5 to avoid spam)
+            done = len(results)
+            if done % 5 == 0 or done == total:
+                try:
+                    from src.core.telegram_callbacks import send_telegram_sync
+                    send_telegram_sync(f"🔎 فحص: {done}/{total}")
+                except Exception:
+                    pass
 
         return results
 

@@ -22,6 +22,8 @@ from src.core.job_state_machine import (
 from src.core.gate_evaluator import GateEvaluator
 from src.core.phase_executor import PhaseExecutor
 from src.core.event_bus import EventBus, Event, EventType
+from src.core.gpu_manager import GPUMemoryManager
+from src.core.resource_coordinator import ResourceCoordinator
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +44,13 @@ class PipelineRunner:
 
         self.state = JobStateMachine(self.db)
         self.gates = GateEvaluator(self.config)
-        self.executor = PhaseExecutor(self.config, self.db)
+
+        # GPU orchestration: unload old model → load new model before each phase
+        gpu_config = self.config.get("settings", {}).get("gpu", {})
+        self.gpu = GPUMemoryManager(gpu_config)
+        self.resource_coordinator = ResourceCoordinator(self.gpu)
+
+        self.executor = PhaseExecutor(self.config, self.db, resource_coordinator=self.resource_coordinator)
         self.events = EventBus()
 
         # Wire up event subscribers (telegram, event store, etc. added externally)
@@ -72,14 +80,34 @@ class PipelineRunner:
 
                 # Pause states — waiting for external input
                 if current in PAUSE_STATES:
-                    logger.info(f"Job {job_id} paused in state: {current.value}")
-                    return "paused" if current == JobStatus.MANUAL_REVIEW else "blocked"
+                    # BUT: if manual_review is already approved, DON'T pause — continue!
+                    if current == JobStatus.MANUAL_REVIEW:
+                        if job.get("manual_review_status") == "approved":
+                            logger.info(f"Job {job_id}: manual_review already approved, proceeding")
+                            # Transition to next state (voice in new pipeline, or publish)
+                            next_status = self.state.get_next_status(current)
+                            if next_status:
+                                self.state.transition(job_id, next_status)
+                                continue
+                        else:
+                            logger.info(f"Job {job_id} paused: waiting for manual review approval")
+                            return "paused"
+                    else:
+                        logger.info(f"Job {job_id} paused in state: {current.value}")
+                        return "blocked"
 
                 # 1. Execute the phase
                 self.events.emit(Event(
                     EventType.PHASE_STARTED, job_id,
                     {"phase": current.value}
                 ))
+
+                # Send progress update to Telegram
+                try:
+                    from src.core.telegram_callbacks import send_progress_update
+                    send_progress_update(job_id, current.value, "started")
+                except Exception:
+                    pass
 
                 result = self.executor.execute(current, job_id)
 
@@ -88,9 +116,20 @@ class PipelineRunner:
                     {"phase": current.value, "score": result.score, "success": result.success}
                 ))
 
+                # Send completion update to Telegram
+                try:
+                    from src.core.telegram_callbacks import send_progress_update
+                    status = "completed" if result.success else ("blocked" if result.blocked else "failed")
+                    send_progress_update(job_id, current.value, status)
+                except Exception:
+                    pass
+
                 if not result.success:
                     if result.blocked:
-                        self.state.transition(job_id, JobStatus.BLOCKED)
+                        # Only transition if not already blocked
+                        current_status = self.db.get_job(job_id).get("status", "")
+                        if current_status != "blocked":
+                            self.state.transition(job_id, JobStatus.BLOCKED)
                         self.db.block_job(job_id, current.value, result.reason)
                         self.events.emit(Event(
                             EventType.JOB_BLOCKED, job_id,
@@ -99,6 +138,26 @@ class PipelineRunner:
                         return "blocked"
                     # Non-blocking failure — try to continue
                     logger.warning(f"Phase {current.value} failed but not blocking: {result.reason}")
+
+                # 2a. Generic "waiting for input" pause — ANY phase can request this
+                if result.success:
+                    details = getattr(result, 'details', {}) or {}
+                    if details.get("waiting_for_input"):
+                        logger.info(f"Job {job_id}: phase '{current.value}' waiting for user input, pausing pipeline")
+                        return "paused"
+
+                # 2b. Script review pause — after script phase, wait for user approval
+                if current == JobStatus.SCRIPT and result.success:
+                    try:
+                        from src.core.telegram_callbacks import _send_script_for_review
+                        _send_script_for_review(job_id, self.db)
+                        # Set status to MANUAL_REVIEW so QueueRunner skips this job
+                        self.state.transition(job_id, JobStatus.MANUAL_REVIEW)
+                        logger.info(f"Job {job_id}: script review requested, pausing pipeline")
+                        return "paused"
+                    except Exception as e:
+                        logger.error(f"Script review notification failed: {e}", exc_info=True)
+                        # Continue anyway if notification fails
 
                 # 2. Evaluate gate (if this phase has one)
                 if result.is_gate:
@@ -126,11 +185,26 @@ class PipelineRunner:
                         ))
                         return "paused"
 
-                # 3. Check if manual review is needed (Phase 7 → 7.5)
+                # 2c. Manual review pause — always pause here, wait for user
+                if current == JobStatus.MANUAL_REVIEW and result.success:
+                    logger.info(f"Job {job_id}: manual review sent to Telegram, pausing pipeline")
+                    return "paused"
+
+                # 2d. After images phase — proceed to voice (new pipeline order)
+                # OLD: used to skip to manual_review. NOW: voice → music → sfx → video → compose
+                # No special handling needed — state machine transitions naturally.
+
+                # 3. Check if manual review is needed (Phase 7 -> 7.5)
                 if current == JobStatus.FINAL_QA:
                     job = self.db.get_job(job_id)
                     if self.gates.evaluate_manual_review_needed(job, self.config):
                         self.state.transition(job_id, JobStatus.MANUAL_REVIEW)
+                        # Run the ManualReviewPhase handler to send Telegram notification
+                        try:
+                            review_result = self.executor.execute(JobStatus.MANUAL_REVIEW, job_id)
+                            logger.info(f"Manual review phase result: {review_result}")
+                        except Exception as e:
+                            logger.error(f"Manual review notification failed: {e}")
                         self.events.emit(Event(
                             EventType.MANUAL_REVIEW_REQUESTED, job_id
                         ))

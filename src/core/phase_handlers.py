@@ -1040,11 +1040,16 @@ class VoicePhase(BasePhase):
         voice_id = selected_voice_id if selected_voice_id != "__edge_tts__" else None
 
         gen = VoiceGenerator()
-        gen.ensure_server()
+
+        # Start Fish Speech server (nuclear cleanup may have killed it)
+        _notify("🎙️ تشغيل خادم الصوت...")
+        if not gen.ensure_server(max_wait=180):
+            logger.warning("Fish Speech server failed to start — will try Edge TTS fallback")
+            _notify("⚠️ خادم الصوت لم يعمل — سنستخدم البديل")
 
         output_dir = f"output/{job_id}/voice"
 
-        # Use directed generation for dynamic narration (varying pace, emotion, pauses)
+        # Generate voice for each scene (simple generation, more reliable)
         results = []
         total = len(scenes)
         for i, scene in enumerate(scenes):
@@ -1056,8 +1061,12 @@ class VoicePhase(BasePhase):
                 results.append(VoiceGenResult(success=False, error="No narration text"))
                 continue
 
-            logger.info(f"Generating directed voice {i + 1}/{total} (scene {idx})")
-            result = gen.generate_directed(
+            logger.info(f"Generating voice {i + 1}/{total} (scene {idx})")
+            # Notify progress every 5 scenes (avoid spam)
+            if i % 5 == 0:
+                _notify(f"🎙️ تعليق {i + 1}/{total}...")
+
+            result = gen.generate(
                 text=narration,
                 output_dir=output_dir,
                 filename=f"scene_{idx:03d}",

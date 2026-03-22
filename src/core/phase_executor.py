@@ -150,7 +150,7 @@ class PhaseExecutor:
                 f"Phase {status.value} completed: success={result.success}, "
                 f"score={result.score}"
             )
-            self._notify_phase_done(status.value, job_id, result)
+            # Phase handlers send their own detailed notifications
             return result
         except Exception as e:
             logger.error(f"Phase {status.value} failed: {e}", exc_info=True)

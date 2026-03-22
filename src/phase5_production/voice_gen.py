@@ -427,13 +427,6 @@ class VoiceGenerator:
                 continue
 
             logger.info(f"Generating voice {i + 1}/{total} (scene {idx})")
-            # Live progress notification
-            try:
-                from src.core.telegram_callbacks import send_telegram_sync
-                send_telegram_sync(f"🎙️ تعليق {i + 1}/{total}...")
-            except Exception:
-                pass
-
             result = self.generate(
                 text=text,
                 output_dir=output_dir,
@@ -441,15 +434,6 @@ class VoiceGenerator:
                 voice_id=voice_id,
             )
             results.append(result)
-
-            # Notify result
-            try:
-                icon = "✅" if result.success else "❌"
-                dur = f" ({result.duration_sec:.0f}s)" if result.success else ""
-                from src.core.telegram_callbacks import send_telegram_sync
-                send_telegram_sync(f"🎙️ مشهد {idx} — {icon}{dur}")
-            except Exception:
-                pass
 
         passed = sum(1 for r in results if r.success)
         logger.info(f"Voice batch complete: {passed}/{total} generated")
