@@ -435,7 +435,11 @@ class VoiceCloner:
 
             for target_mood in ["calm", "dramatic", "question"]:
                 # Collect segments of this mood
-                mood_segs = [s for s in scored_segments if s["mood"] == target_mood]
+                # For calm: include neutral too (neutral = not dramatic, good for narration)
+                if target_mood == "calm":
+                    mood_segs = [s for s in scored_segments if s["mood"] in ("calm", "neutral")]
+                else:
+                    mood_segs = [s for s in scored_segments if s["mood"] == target_mood]
                 if not mood_segs:
                     continue
 
@@ -548,15 +552,17 @@ class VoiceCloner:
     # ════════════════════════════════════════════════════════════
 
     def _extract_main_reference(self, vocals_path: Path, mood_segments: dict, whisper_segments: list) -> dict:
-        """Extract the best main reference (prefer calm, up to 120s for variety)."""
-        # Use calm segment if available and long enough
-        if "calm" in mood_segments and mood_segments["calm"]["duration"] >= 20:
-            return mood_segments["calm"]
-
-        # Otherwise find best 120s window with most speech
-        # Longer reference = more pitch/pacing variety for Fish Speech to learn from
+        """Extract the best main reference — ALWAYS use longest possible (up to 120s).
+        
+        Longer reference = more variety = less monotone output.
+        Don't settle for short calm segment when we can get 120s of mixed speech.
+        """
         total_dur = self._get_duration(vocals_path)
         target = min(120, total_dur)
+        
+        # Only use mood segment if it's already long enough (60s+)
+        if "calm" in mood_segments and mood_segments["calm"]["duration"] >= 60:
+            return mood_segments["calm"]
 
         best_start = 0
         best_speech = 0
