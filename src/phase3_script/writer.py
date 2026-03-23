@@ -60,13 +60,28 @@ WRITER_SYSTEM = """[SYSTEM DIRECTIVE - CRITICAL OVERRIDE]
 OUTLINE_PROMPT = """أنت تخطط لوثائقي عن: "{topic}"
 الزاوية: {angle}
 
-المطلوب: اكتب مخططاً تفصيلياً (outline) للسكربت يتكون من 5 فصول:
+## المهمة الأولى: تقدير المدة المناسبة
 
-1. المشهد الافتتاحي (الخطاف): ما هو المشهد الصادم أو التناقض الذي سيفتح به الوثائقي؟ اذكر 3-4 نقاط تفصيلية.
-2. الفصل الأول — الجذور: ما الأحداث والتفاصيل التاريخية الدقيقة التي يجب تغطيتها؟ اذكر 5-7 نقاط مع تواريخ وأسماء.
-3. الفصل الثاني — الذروة: ما لحظات التصادم والمواجهة المباشرة؟ اذكر 5-7 نقاط مع تفاصيل درامية.
-4. الفصل الثالث — التداعيات: ما النتائج الكارثية على المنطقة والشعوب؟ اذكر 4-6 نقاط.
-5. الخاتمة: ما السؤال الفلسفي أو التأمل المظلم الذي سيختم به؟ وكيف يرتبط بالخطاف؟
+قبل كتابة المخطط، حلّل الموضوع وقرر:
+- هل هذا موضوع غني بالأحداث والتفاصيل (مثل حروب، صراعات تاريخية طويلة) → يحتاج 15-25 دقيقة
+- هل هو موضوع متوسط العمق (تحليل ظاهرة، سيرة شخصية) → يحتاج 10-15 دقيقة  
+- هل هو موضوع خفيف أو فكرة واحدة (ماذا لو، حقائق غريبة) → يحتاج 6-10 دقائق
+
+اكتب في أول سطر بالضبط هذا الشكل:
+DURATION_MINUTES: [الرقم]
+
+مثال: DURATION_MINUTES: 18
+
+## المهمة الثانية: المخطط التفصيلي
+
+بناءً على المدة التي حددتها، اكتب مخططاً من 5 فصول.
+كلما كانت المدة أطول، كلما احتجت نقاطاً وتفاصيل أكثر في كل فصل.
+
+1. المشهد الافتتاحي (الخطاف): مشهد صادم أو تناقض. اذكر 3-4 نقاط تفصيلية.
+2. الفصل الأول — الجذور: الأحداث والتفاصيل التاريخية الدقيقة. اذكر 5-8 نقاط مع تواريخ وأسماء.
+3. الفصل الثاني — الذروة: لحظات التصادم والمواجهة المباشرة. اذكر 5-8 نقاط مع تفاصيل درامية.
+4. الفصل الثالث — التداعيات: النتائج الكارثية على المنطقة والشعوب. اذكر 4-7 نقاط.
+5. الخاتمة: السؤال الفلسفي والتأمل المظلم. كيف يرتبط بالخطاف؟
 
 لكل نقطة: اذكر (الحدث، التاريخ، الأشخاص، التفصيل الدرامي الذي يجب ذكره).
 
@@ -81,6 +96,9 @@ OUTLINE_PROMPT = """أنت تخطط لوثائقي عن: "{topic}"
 
 CHAPTER_PROMPT = """أنت تكتب فصلاً واحداً من سكربت وثائقي عن: "{topic}"
 
+المدة الإجمالية للوثائقي: {total_minutes} دقائق
+هذا الفصل يجب أن يكون حوالي {chapter_words} كلمة ({chapter_minutes} دقائق).
+
 هذا هو المخطط الكامل للوثائقي:
 {outline}
 
@@ -91,7 +109,7 @@ CHAPTER_PROMPT = """أنت تكتب فصلاً واحداً من سكربت وث
 {chapter_points}
 
 التعليمات:
-- اكتب 300-400 كلمة على الأقل لهذا الفصل.
+- اكتب {chapter_words} كلمة على الأقل لهذا الفصل. هذا ليس اختيارياً.
 - ابدأ بالتوجيهات البصرية والصوتية [بصري: ...] [صوتي: ...] ثم السرد مباشرة.
 - استخدم أسلوب العدسة المكبرة: تفصيل دقيق → صورة كبرى.
 - لا تكتب "المعلق:" أو "السرد:" — اكتب النص مباشرة.
@@ -192,6 +210,18 @@ class ScriptWriter:
 
         logger.info(f"Script: Outline ready ({len(outline.split())} words)")
 
+        # ─── Step 1.5: Extract duration from outline ───
+        total_minutes = self._extract_duration(outline)
+        total_words = int(total_minutes * 130)  # ~130 words/min for Arabic narration
+        
+        # Distribute words across chapters (hook shorter, middle chapters longer)
+        # Hook: 15%, Ch1: 25%, Ch2: 25%, Ch3: 20%, Conclusion: 15%
+        chapter_weights = [0.15, 0.25, 0.25, 0.20, 0.15]
+        chapter_word_targets = [int(total_words * w) for w in chapter_weights]
+        chapter_minute_targets = [round(total_minutes * w, 1) for w in chapter_weights]
+        
+        logger.info(f"Script: Duration {total_minutes} min, {total_words} words target, per-chapter: {chapter_word_targets}")
+
         # ─── Step 2: Parse outline into chapter points ───
         chapter_points = self._parse_outline_chapters(outline)
 
@@ -199,11 +229,12 @@ class ScriptWriter:
         chapters_text = []
         
         for i, (chapter_name, chapter_num) in enumerate(self.CHAPTERS):
-            logger.info(f"Script: Step {i+2}/6 — expanding '{chapter_name}'")
+            ch_words = chapter_word_targets[i]
+            ch_minutes = chapter_minute_targets[i]
+            logger.info(f"Script: Step {i+2}/6 — expanding '{chapter_name}' (target: {ch_words} words, {ch_minutes} min)")
             
             points = chapter_points.get(chapter_num, "")
             if not points:
-                # If parsing failed, give the full outline section
                 points = f"راجع المخطط أعلاه للفصل رقم {chapter_num}"
 
             chapter_text = generate(
@@ -212,6 +243,9 @@ class ScriptWriter:
                     outline=outline,
                     chapter_name=chapter_name,
                     chapter_points=points,
+                    total_minutes=total_minutes,
+                    chapter_words=ch_words,
+                    chapter_minutes=ch_minutes,
                 ),
                 system=WRITER_SYSTEM,
                 max_tokens=16384,  # Thinking needs room — 8-10K thinking + 4-6K response
@@ -228,6 +262,9 @@ class ScriptWriter:
                         outline=outline,
                         chapter_name=chapter_name,
                         chapter_points=points,
+                        total_minutes=total_minutes,
+                        chapter_words=ch_words,
+                        chapter_minutes=ch_minutes,
                     ),
                     system=WRITER_SYSTEM,
                     max_tokens=24576,  # Even more room for thinking
@@ -276,6 +313,19 @@ class ScriptWriter:
         if result:
             return self._remove_youtube_cta(self._extract_narration(result))
         return ""
+
+    @staticmethod
+    def _extract_duration(outline: str) -> int:
+        """Extract DURATION_MINUTES from outline. Default 12 if not found."""
+        match = re.search(r'DURATION_MINUTES:\s*(\d+)', outline)
+        if match:
+            minutes = int(match.group(1))
+            # Clamp to reasonable range
+            minutes = max(6, min(30, minutes))
+            logger.info(f"Qwen chose duration: {minutes} minutes")
+            return minutes
+        logger.warning("No DURATION_MINUTES found in outline, defaulting to 12")
+        return 12
 
     def _parse_outline_chapters(self, outline: str) -> dict:
         """Parse outline text into chapter sections."""
