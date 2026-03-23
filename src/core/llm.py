@@ -73,11 +73,30 @@ def generate(
             logger.info(f"LLM: thinking={think_words}w, response={resp_words}w, "
                        f"eval_count={eval_count}, num_predict={max_tokens}")
 
-        # If response is empty, don't use thinking as fallback
+        # If response is empty but thinking exists, model stopped after thinking
+        if not response.strip() and thinking:
+            logger.warning(f"Response empty despite {len(thinking)} chars thinking "
+                         f"(eval_count={eval_count}, num_predict={max_tokens}). "
+                         f"Retrying once with /no_think to force direct output.")
+            # Retry WITHOUT thinking — forces model to write response directly
+            payload["prompt"] = f"/no_think\n{prompt}"
+            try:
+                resp2 = requests.post(
+                    f"{OLLAMA_HOST}/api/generate",
+                    json=payload,
+                    timeout=TIMEOUT,
+                )
+                resp2.raise_for_status()
+                data2 = resp2.json()
+                response2 = data2.get("response", "")
+                if response2.strip():
+                    logger.info(f"Retry without thinking succeeded: {len(response2.split())}w")
+                    return response2
+            except Exception as e2:
+                logger.warning(f"Retry without thinking failed: {e2}")
+            return ""
+        
         if not response.strip():
-            if thinking:
-                logger.warning(f"Response empty despite {len(thinking)} chars thinking "
-                             f"(eval_count={eval_count}, num_predict={max_tokens})")
             return ""
 
         return response

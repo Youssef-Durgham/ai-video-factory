@@ -63,6 +63,7 @@ cut, crossfade, dissolve, fade_black, fade_white, wipe_left, slide_up, zoom_in, 
 ═══ أنماط حركة الكاميرا ═══
 static, slow_zoom_in, slow_zoom_out, slow_pan_left, slow_pan_right, ken_burns, parallax, dolly_forward
 
+مهم جداً: اكتب الـ JSON مباشرة بدون شرح أو تحليل مطول. ابدأ فوراً بكتابة الـ JSON:
 أجب بـ JSON:
 {{
     "scenes": [
@@ -141,17 +142,8 @@ class SceneSplitter:
                 prompt=prompt,
                 system=SPLITTER_SYSTEM,
                 temperature=0.5,
-                max_tokens=16384,
+                # Uses DEFAULT_PREDICT (24K) — don't override
             )
-
-            if not result:
-                logger.warning("Scene splitter got empty result, retrying with more tokens")
-                result = generate_json(
-                    prompt=prompt,
-                    system=SPLITTER_SYSTEM,
-                    temperature=0.5,
-                    max_tokens=24576,
-                )
 
             scenes = result.get("scenes", []) if result else []
 
