@@ -52,39 +52,59 @@ def generate(
     if json_mode:
         payload["format"] = "json"
 
-    try:
-        resp = requests.post(
-            f"{OLLAMA_HOST}/api/generate",
-            json=payload,
-            timeout=TIMEOUT,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        response = data.get("response", "")
-        thinking = data.get("thinking", "")
+    # Auto-retry with more tokens if thinking exhausts the budget
+    current_predict = max_tokens
+    max_retries = 3
+    
+    for attempt in range(max_retries + 1):
+        payload["options"]["num_predict"] = current_predict
         
-        # Log token usage for debugging
-        eval_count = data.get("eval_count", 0)
-        if thinking:
-            logger.debug(f"Thinking: {len(thinking)} chars, Response: {len(response)} chars, eval_count: {eval_count}")
-        
-        # If response is empty but thinking exists, the model spent all tokens thinking.
-        # Do NOT use thinking as response — it's internal reasoning (often in English).
-        if not response.strip():
+        try:
+            resp = requests.post(
+                f"{OLLAMA_HOST}/api/generate",
+                json=payload,
+                timeout=TIMEOUT,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            response = data.get("response", "")
+            thinking = data.get("thinking", "")
+            eval_count = data.get("eval_count", 0)
+            
             if thinking:
-                logger.warning(f"Response empty but thinking has {len(thinking)} chars — model exhausted tokens on thinking. Returning empty.")
-            return ""
-        
-        return response
-    except requests.Timeout:
-        logger.error(f"Ollama timeout after {TIMEOUT}s")
-        raise
-    except requests.ConnectionError:
-        logger.error("Ollama not reachable — is it running?")
-        raise
-    except Exception as e:
-        logger.error(f"Ollama error: {e}")
-        raise
+                logger.debug(f"Thinking: {len(thinking)} chars, Response: {len(response)} chars, "
+                           f"eval_count: {eval_count}, num_predict: {current_predict}")
+            
+            # If response is empty but thinking exists → thinking ate all tokens
+            if not response.strip() and thinking:
+                if attempt < max_retries:
+                    # Double the token budget and retry
+                    old_predict = current_predict
+                    current_predict = min(current_predict * 2, 65536)  # Cap at 64K
+                    logger.warning(f"Thinking exhausted tokens ({len(thinking)} chars thinking, 0 response). "
+                                 f"Retrying: num_predict {old_predict} → {current_predict} (attempt {attempt+2}/{max_retries+1})")
+                    continue
+                else:
+                    logger.error(f"Thinking exhausted tokens after {max_retries+1} attempts "
+                               f"(last num_predict={current_predict}). Returning empty.")
+                    return ""
+            
+            if not response.strip() and not thinking:
+                return ""
+            
+            return response
+            
+        except requests.Timeout:
+            logger.error(f"Ollama timeout after {TIMEOUT}s (num_predict={current_predict})")
+            raise
+        except requests.ConnectionError:
+            logger.error("Ollama not reachable — is it running?")
+            raise
+        except Exception as e:
+            logger.error(f"Ollama error: {e}")
+            raise
+    
+    return ""
 
 
 def generate_json(
@@ -95,25 +115,19 @@ def generate_json(
     max_tokens: int = 8192,
     retries: int = 2,
 ) -> dict:
-    """Generate and parse JSON from Ollama. Retries on empty/invalid response."""
-    for attempt in range(retries + 1):
-        raw = generate(
-            prompt=prompt,
-            system=system,
-            model=model,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            json_mode=True,
-            think=False,  # JSON calls don't need thinking — it wastes tokens
-        )
-        if raw and raw.strip():
-            break
-        if attempt < retries:
-            logger.warning(f"generate_json: empty response (attempt {attempt+1}/{retries+1}), retrying with more tokens")
-            max_tokens = min(max_tokens * 2, 32768)  # Double tokens each retry
-        else:
-            logger.error("generate_json: all retries returned empty response")
-            return {}
+    """Generate and parse JSON from Ollama. generate() auto-retries if thinking exhausts tokens."""
+    raw = generate(
+        prompt=prompt,
+        system=system,
+        model=model,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        json_mode=True,
+        think=True,  # Always thinking — generate() handles token exhaustion internally
+    )
+    if not raw or not raw.strip():
+        logger.error("generate_json: empty response after all retries")
+        return {}
     
     # Try to parse JSON — handle edge cases
     raw = raw.strip()
