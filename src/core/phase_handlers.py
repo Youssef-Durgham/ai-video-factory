@@ -558,51 +558,12 @@ class ScriptPhase(BasePhase):
                 reason="Scene splitting produced no scenes",
             )
 
-        # 5.5. Self-review: LLM reviews the script for issues before sending to user
-        logger.info(f"Script: self-reviewing script for '{topic}'")
-        try:
-            review_prompt = f"""أنت مراجع سكربتات وثائقية محترف. راجع السكربت التالي وأصلح أي مشاكل:
-
-**الموضوع:** {topic}
-**السكربت:**
-{script_text}
-
-## تعليمات المراجعة:
-1. تأكد من عدم وجود جمل مقطوعة أو غير مكتملة
-2. تأكد أن المقدمة جذابة وتحتوي على hook قوي
-3. تأكد أن الخاتمة تحتوي على call-to-action (اشتراك، إعجاب، تعليق)
-4. صحح أي أخطاء نحوية أو إملائية
-5. تأكد أن الانتقالات بين المشاهد سلسة
-6. تأكد أن الأرقام والحقائق منطقية
-7. تأكد أن الأسلوب متسق طوال السكربت (فصحى وسلس)
-8. أزل أي تكرار غير مبرر
-9. تأكد أن الطول مناسب (ليس قصير جداً ولا طويل جداً)
-
-أعد السكربت المُعدّل فقط بدون أي تعليقات أو شروحات. إذا كان السكربت جيداً، أعده كما هو."""
-
-            from src.core.llm import generate
-            reviewed_script = generate(
-                prompt=review_prompt,
-                system="أنت مراجع سكربتات عربية. أعد السكربت المصحح فقط بدون أي تعليقات.",
-                max_tokens=16000,
-            )
-            if reviewed_script and len(reviewed_script.strip()) > 100:
-                script_text = reviewed_script.strip()
-                logger.info(f"Script self-review complete: {len(script_text.split())} words")
-
-                # Re-split scenes with reviewed script
-                scenes = splitter.split_to_scenes(
-                    script_text=script_text,
-                    topic=topic,
-                    region=region,
-                    channel_config=channel_config,
-                )
-                if not scenes:
-                    logger.warning("Scene re-split after review failed, using original scenes")
-            else:
-                logger.warning("Script self-review returned empty, using original")
-        except Exception as e:
-            logger.warning(f"Script self-review failed (using original): {e}")
+        # 5.5. Self-review: DISABLED
+        # The multi-pass writer (Outline → Expand → Merge) already produces
+        # high-quality scripts. The old self-review was destructive:
+        # - Thinking mode consumed 80%+ of tokens → 10,305 words became 373
+        # - Review instruction #3 asked LLM to ADD YouTube CTA (subscribe/bell)
+        # If review is needed in the future, it should flag issues without rewriting.
 
         # 6. Save to DB
         word_count = len(script_text.split())
