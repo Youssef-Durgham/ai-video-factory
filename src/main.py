@@ -265,6 +265,7 @@ class Factory:
             rows = self.db.conn.execute(f"""
                 SELECT id, status FROM jobs 
                 WHERE status NOT IN ({placeholders})
+                AND updated_at > datetime('now', '-24 hours')
                 ORDER BY updated_at DESC
             """, skip_values).fetchall()
             

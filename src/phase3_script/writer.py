@@ -157,17 +157,17 @@ class ScriptWriter:
             think=True,  # Thinking ON — planning benefits from reasoning
         )
         
-        # Fallback if thinking exhausted tokens
+        # Retry with more tokens if outline is empty
         if not outline or len(outline.strip()) < 100:
-            logger.warning("Outline empty (thinking exhausted tokens), retrying without thinking")
+            logger.warning("Outline empty, retrying with 24K tokens")
             outline = generate(
                 prompt=OUTLINE_PROMPT.format(
                     topic=topic, angle=angle, research_text=research_text,
                 ),
                 system=f"أنت خبير في التخطيط الوثائقي. خطط فقط لموضوع: {topic}",
-                max_tokens=4096,
+                max_tokens=24576,
                 temperature=0.7,
-                think=False,
+                think=True,  # Always thinking
             )
 
         if not outline or len(outline.strip()) < 100:
@@ -214,14 +214,14 @@ class ScriptWriter:
                     chapter_points=points,
                 ),
                 system=WRITER_SYSTEM,
-                max_tokens=8192,  # Thinking takes ~3-4K, leaving ~4K for 400+ words
+                max_tokens=16384,  # Thinking needs room — 8-10K thinking + 4-6K response
                 temperature=0.6,
-                think=True,  # Thinking ON — each chapter is short enough
+                think=True,  # Always thinking — quality is priority
             )
             
-            # If thinking exhausted all tokens (empty response), retry without thinking
+            # If response still empty, retry with higher token budget
             if not chapter_text or len(chapter_text.strip()) < 50:
-                logger.warning(f"  → {chapter_name}: thinking exhausted tokens, retrying without thinking")
+                logger.warning(f"  → {chapter_name}: empty response, retrying with 24K tokens")
                 chapter_text = generate(
                     prompt=CHAPTER_PROMPT.format(
                         topic=topic,
@@ -230,9 +230,9 @@ class ScriptWriter:
                         chapter_points=points,
                     ),
                     system=WRITER_SYSTEM,
-                    max_tokens=4096,
+                    max_tokens=24576,  # Even more room for thinking
                     temperature=0.6,
-                    think=False,  # Fallback: no thinking
+                    think=True,  # Still thinking — always
                 )
 
             if chapter_text and len(chapter_text.strip()) > 50:
@@ -269,9 +269,9 @@ class ScriptWriter:
 
 اكتب حصراً عن "{topic}". لا تكتب عن أي موضوع آخر.""",
             system=WRITER_SYSTEM,
-            max_tokens=16384,
+            max_tokens=24576,
             temperature=0.6,
-            think=False,  # Single pass = thinking off to maximize output
+            think=True,  # Always thinking
         )
         if result:
             return self._remove_youtube_cta(self._extract_narration(result))
