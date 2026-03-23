@@ -104,6 +104,7 @@ def generate_json(
             temperature=temperature,
             max_tokens=max_tokens,
             json_mode=True,
+            think=False,  # JSON calls don't need thinking — it wastes tokens
         )
         if raw and raw.strip():
             break
