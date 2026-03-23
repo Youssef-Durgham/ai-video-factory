@@ -193,6 +193,9 @@ class Factory:
             # Startup notification
             self._notify_startup()
 
+            # Crash recovery: resume interrupted jobs
+            self._recover_interrupted_jobs()
+
             # Run the queue loop (blocking)
             logger.info("✅ Queue runner starting — entering main loop")
             self._run_queue_loop()
@@ -243,6 +246,54 @@ class Factory:
             pass
 
         logger.info("Factory shutdown complete")
+
+    def _recover_interrupted_jobs(self):
+        """Resume jobs that were running when the bot crashed/restarted.
+        
+        Finds jobs in active (non-terminal, non-paused) states and ensures
+        they're in the queue so the queue loop picks them up.
+        """
+        try:
+            from src.core.job_state_machine import JobStatus, TERMINAL_STATES, PAUSE_STATES
+            
+            # Active states = anything not terminal, not paused, not pending
+            terminal_values = [s.value for s in TERMINAL_STATES]
+            pause_values = [s.value for s in PAUSE_STATES]
+            skip_values = terminal_values + pause_values + ['pending']
+            
+            placeholders = ','.join(['?'] * len(skip_values))
+            rows = self.db.conn.execute(f"""
+                SELECT id, status FROM jobs 
+                WHERE status NOT IN ({placeholders})
+                ORDER BY updated_at DESC
+            """, skip_values).fetchall()
+            
+            if not rows:
+                logger.info("No interrupted jobs to recover")
+                return
+            
+            for row in rows:
+                job_id = row["id"]
+                status = row["status"]
+                
+                # Check if already in queue
+                in_queue = self.db.conn.execute(
+                    "SELECT 1 FROM job_queue WHERE job_id = ?", (job_id,)
+                ).fetchone()
+                
+                if not in_queue:
+                    # Add to queue with high priority so it runs next
+                    self.db.conn.execute(
+                        "INSERT INTO job_queue (job_id, priority, position) VALUES (?, 0, 0)",
+                        (job_id,)
+                    )
+                    self.db.conn.commit()
+                    logger.info(f"🔄 Recovered interrupted job: {job_id} (status: {status}) — added to queue")
+                else:
+                    logger.info(f"🔄 Interrupted job already in queue: {job_id} (status: {status})")
+                    
+        except Exception as e:
+            logger.error(f"Crash recovery failed: {e}", exc_info=True)
 
     def _run_queue_loop(self):
         """Main queue processing loop."""
