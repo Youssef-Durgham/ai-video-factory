@@ -1,6 +1,11 @@
 """
 Ollama LLM client — all LLM calls go through here.
 Model: qwen3.5:27b via Ollama API.
+
+IMPORTANT: num_predict is set high (32K) by default because Qwen 3.5 thinking
+mode uses num_predict for BOTH thinking + response. Setting it low causes
+thinking to exhaust the budget with zero response. 32K is safe — the model
+stops generating when done, it doesn't fill all 32K tokens.
 """
 
 import json
@@ -12,8 +17,9 @@ logger = logging.getLogger(__name__)
 
 OLLAMA_HOST = "http://localhost:11434"
 DEFAULT_MODEL = "qwen3.5:27b"
-DEFAULT_CTX = 32768  # 32K context — sweet spot for speed vs capacity
-TIMEOUT = 3600  # 60 min — thinking mode can take very long on complex topics
+DEFAULT_CTX = 32768   # 32K context window
+DEFAULT_PREDICT = 32000  # ~32K output tokens — thinking + response combined
+TIMEOUT = 3600  # 60 min
 
 
 def generate(
@@ -21,18 +27,15 @@ def generate(
     system: str = "",
     model: str = DEFAULT_MODEL,
     temperature: float = 0.7,
-    max_tokens: int = 4096,
+    max_tokens: int = DEFAULT_PREDICT,
     json_mode: bool = False,
     think: bool = True,
 ) -> str:
     """Generate text from Ollama. Returns raw string response.
     
-    Args:
-        think: Enable/disable thinking mode. Disable for long-form creative
-               writing to avoid thinking consuming the output token budget.
+    num_predict is set high (32K) to guarantee thinking mode never exhausts
+    the output budget. The model stops when it's done — it won't waste tokens.
     """
-    # Qwen 3.5 thinking mode: /no_think disables internal reasoning
-    # This is critical for scripts — thinking eats 80%+ of num_predict budget
     actual_prompt = prompt
     if not think:
         actual_prompt = f"/no_think\n{prompt}"
@@ -52,59 +55,42 @@ def generate(
     if json_mode:
         payload["format"] = "json"
 
-    # Auto-retry with more tokens if thinking exhausts the budget
-    current_predict = max_tokens
-    max_retries = 3
-    
-    for attempt in range(max_retries + 1):
-        payload["options"]["num_predict"] = current_predict
-        
-        try:
-            resp = requests.post(
-                f"{OLLAMA_HOST}/api/generate",
-                json=payload,
-                timeout=TIMEOUT,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            response = data.get("response", "")
-            thinking = data.get("thinking", "")
-            eval_count = data.get("eval_count", 0)
-            
+    try:
+        resp = requests.post(
+            f"{OLLAMA_HOST}/api/generate",
+            json=payload,
+            timeout=TIMEOUT,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        response = data.get("response", "")
+        thinking = data.get("thinking", "")
+        eval_count = data.get("eval_count", 0)
+
+        if thinking:
+            think_words = len(thinking.split())
+            resp_words = len(response.split()) if response else 0
+            logger.info(f"LLM: thinking={think_words}w, response={resp_words}w, "
+                       f"eval_count={eval_count}, num_predict={max_tokens}")
+
+        # If response is empty, don't use thinking as fallback
+        if not response.strip():
             if thinking:
-                logger.debug(f"Thinking: {len(thinking)} chars, Response: {len(response)} chars, "
-                           f"eval_count: {eval_count}, num_predict: {current_predict}")
-            
-            # If response is empty but thinking exists → thinking ate all tokens
-            if not response.strip() and thinking:
-                if attempt < max_retries:
-                    # Double the token budget and retry
-                    old_predict = current_predict
-                    current_predict = min(current_predict * 2, 65536)  # Cap at 64K
-                    logger.warning(f"Thinking exhausted tokens ({len(thinking)} chars thinking, 0 response). "
-                                 f"Retrying: num_predict {old_predict} → {current_predict} (attempt {attempt+2}/{max_retries+1})")
-                    continue
-                else:
-                    logger.error(f"Thinking exhausted tokens after {max_retries+1} attempts "
-                               f"(last num_predict={current_predict}). Returning empty.")
-                    return ""
-            
-            if not response.strip() and not thinking:
-                return ""
-            
-            return response
-            
-        except requests.Timeout:
-            logger.error(f"Ollama timeout after {TIMEOUT}s (num_predict={current_predict})")
-            raise
-        except requests.ConnectionError:
-            logger.error("Ollama not reachable — is it running?")
-            raise
-        except Exception as e:
-            logger.error(f"Ollama error: {e}")
-            raise
-    
-    return ""
+                logger.warning(f"Response empty despite {len(thinking)} chars thinking "
+                             f"(eval_count={eval_count}, num_predict={max_tokens})")
+            return ""
+
+        return response
+
+    except requests.Timeout:
+        logger.error(f"Ollama timeout after {TIMEOUT}s")
+        raise
+    except requests.ConnectionError:
+        logger.error("Ollama not reachable — is it running?")
+        raise
+    except Exception as e:
+        logger.error(f"Ollama error: {e}")
+        raise
 
 
 def generate_json(
@@ -112,10 +98,9 @@ def generate_json(
     system: str = "",
     model: str = DEFAULT_MODEL,
     temperature: float = 0.5,
-    max_tokens: int = 8192,
-    retries: int = 2,
+    max_tokens: int = DEFAULT_PREDICT,
 ) -> dict:
-    """Generate and parse JSON from Ollama. generate() auto-retries if thinking exhausts tokens."""
+    """Generate and parse JSON from Ollama."""
     raw = generate(
         prompt=prompt,
         system=system,
@@ -123,31 +108,30 @@ def generate_json(
         temperature=temperature,
         max_tokens=max_tokens,
         json_mode=True,
-        think=True,  # Always thinking — generate() handles token exhaustion internally
+        think=True,
     )
     if not raw or not raw.strip():
-        logger.error("generate_json: empty response after all retries")
+        logger.error("generate_json: empty response")
         return {}
-    
-    # Try to parse JSON — handle edge cases
+
     raw = raw.strip()
-    # Sometimes model wraps in ```json ... ```
+    # Strip ```json wrapper
     if raw.startswith("```"):
         lines = raw.split("\n")
         raw = "\n".join(lines[1:-1]) if lines[-1].strip() == "```" else "\n".join(lines[1:])
     try:
         return json.loads(raw)
     except json.JSONDecodeError:
-        # Try to find JSON object in the text
-        start = raw.find("{")
-        end = raw.rfind("}") + 1
-        if start >= 0 and end > start:
-            return json.loads(raw[start:end])
-        start = raw.find("[")
-        end = raw.rfind("]") + 1
-        if start >= 0 and end > start:
-            return json.loads(raw[start:end])
-        logger.error(f"Failed to parse JSON from LLM: {raw[:500]}")
+        # Try to extract JSON from mixed text
+        for opener, closer in [("{", "}"), ("[", "]")]:
+            start = raw.find(opener)
+            end = raw.rfind(closer) + 1
+            if start >= 0 and end > start:
+                try:
+                    return json.loads(raw[start:end])
+                except json.JSONDecodeError:
+                    continue
+        logger.error(f"Failed to parse JSON: {raw[:500]}")
         return {}
 
 
@@ -155,7 +139,7 @@ def chat(
     messages: list[dict],
     model: str = DEFAULT_MODEL,
     temperature: float = 0.7,
-    max_tokens: int = 4096,
+    max_tokens: int = DEFAULT_PREDICT,
     json_mode: bool = False,
 ) -> str:
     """Chat-style generation with message history."""

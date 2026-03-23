@@ -170,9 +170,7 @@ class ScriptWriter:
                 research_text=research_text,
             ),
             system=f"أنت خبير في التخطيط الوثائقي. خطط فقط لموضوع: {topic}",
-            max_tokens=8192,  # generate() auto-retries with 2x if thinking exhausts this
             temperature=0.7,
-            think=True,
         )
 
         if not outline or len(outline.strip()) < 100:
@@ -188,9 +186,7 @@ class ScriptWriter:
                     topic=topic, angle=angle, research_text=research_text,
                 ),
                 system=f"اكتب مخططاً فقط عن: {topic}. لا موضوع آخر.",
-                max_tokens=4096,
                 temperature=0.5,
-                think=True,
             )
             if not outline or len(outline.strip()) < 100:
                 return self._fallback_single_pass(topic, angle, research_text)
@@ -235,9 +231,7 @@ class ScriptWriter:
                     chapter_minutes=ch_minutes,
                 ),
                 system=WRITER_SYSTEM,
-                max_tokens=8192,  # generate() auto-retries with 2x if thinking exhausts this
                 temperature=0.6,
-                think=True,
             )
 
             if chapter_text and len(chapter_text.strip()) > 50:
@@ -274,9 +268,7 @@ class ScriptWriter:
 
 اكتب حصراً عن "{topic}". لا تكتب عن أي موضوع آخر.""",
             system=WRITER_SYSTEM,
-            max_tokens=8192,
             temperature=0.6,
-            think=True,
         )
         if result:
             return self._remove_youtube_cta(self._extract_narration(result))
