@@ -64,7 +64,8 @@ OUTLINE_PROMPT = """أنت تخطط لوثائقي عن: "{topic}"
 ## المهمة الثانية: المخطط التفصيلي
 اكتب مخططاً مفصلاً جداً من 5 فصول.
 ⚠️ كل فصل يجب أن يحتوي على 8-15 نقطة تفصيلية على الأقل.
-⚠️ كل نقطة يجب أن تكون جملة كاملة تذكر: الحدث + التاريخ + الأشخاص + التفصيل الدرامي.
+⚠️ كل نقطة = حدث تاريخي محدد (اسم شخص + تاريخ + مكان + ما حصل بالضبط).
+⚠️ لا تكتب نقاطاً عامة مثل "التوترات تصاعدت". اكتب "أزمة مياه الفرات عام ألف وتسعمئة وخمسة وسبعين بسبب سد الطبقة".
 ⚠️ إذا كتبت أقل من 8 نقاط لأي فصل سيتم رفض المخطط.
 
 الشكل المطلوب بالضبط:
@@ -101,20 +102,27 @@ CHAPTER_5: الخاتمة والتأمل الفلسفي
 SUBSECTION_PROMPT = """الموضوع: "{topic}"
 الفصل: {chapter_name}
 
-اكتب فقرة سردية وثائقية عن النقاط التالية:
+النقاط المطلوب تغطيتها:
 {points}
 
+معلومات مرجعية (استخدمها):
+{research_context}
+
 ## التعليمات الإجبارية:
-1. اكتب 150-250 كلمة عن هذه النقاط فقط.
-2. ابدأ بتوجيه بصري وصوتي بهذا الشكل بالضبط:
-   [بصري: وصف دقيق للقطة — حجم اللقطة، الإضاءة، العناصر المرئية]
-   [صوتي: نوع الموسيقى، المؤثرات الصوتية]
-   ثم اكتب السرد مباشرة.
-   ⚠️ التوجيه البصري والصوتي إجباري في بداية كل فقرة — لا تحذفه.
-3. الأرقام بالحروف العربية فقط.
-4. ممنوع التشكيل نهائياً (لا فتحة، لا ضمة، لا كسرة).
+1. اكتب 150-250 كلمة. ركّز على الأحداث والحقائق لا الوصف الأدبي.
+2. ⚠️ ابدأ إجبارياً بتوجيه بصري وصوتي:
+   [بصري: وصف اللقطة — حجمها، الإضاءة، العناصر المرئية]
+   [صوتي: الموسيقى، المؤثرات]
+   ثم اكتب السرد.
+3. الأرقام بالحروف العربية.
+4. ممنوع التشكيل نهائياً.
 5. ممنوع: اشتراك، إعجاب، جرس.
-6. اسرد حقائق وأحداث تاريخية محددة (أسماء، تواريخ، أماكن). لا تعتمد على الوصف الدرامي المجرد.
+
+⚠️ قواعد المحتوى (الأهم):
+- اذكر أسماء أشخاص حقيقيين وتواريخ وأماكن محددة في كل فقرة.
+- لا تكتب وصفاً درامياً مجرداً بدون أحداث. كل جملة يجب أن تحتوي معلومة.
+- مثال سيء: "في الغرف المغلقة، كان الدخان يتصاعد والقرارات تُصنع"
+- مثال جيد: "في قاعة الخلد ببغداد عام ألف وتسعمئة وتسعة وسبعين، وقف صدام حسين وبيده قائمة بأسماء ستة وستين عضواً من حزب البعث اتهمهم بالتآمر مع دمشق"
 {anti_repetition}
 اكتب الآن."""
 
@@ -211,11 +219,15 @@ class ScriptWriter:
                 if used_phrases:
                     anti_rep = "\n\n⚠️ عبارات مستخدمة سابقاً (لا تكررها): " + "، ".join(list(used_phrases)[-10:])
                 
+                # Extract relevant research snippet for this chapter's points
+                research_snippet = self._get_relevant_research(research_text, sub_points, chapter_name)
+                
                 text = generate(
                     prompt=SUBSECTION_PROMPT.format(
                         topic=topic,
                         chapter_name=chapter_name,
                         points=points_text,
+                        research_context=research_snippet,
                         anti_repetition=anti_rep,
                     ),
                     system=WRITER_SYSTEM,
@@ -354,6 +366,42 @@ class ScriptWriter:
             if s:
                 narration_lines.append(s)
         return "\n\n".join(narration_lines) if narration_lines else raw_script
+
+    @staticmethod
+    def _get_relevant_research(research_text, points, chapter_name):
+        """Extract research sentences relevant to the current sub-section points."""
+        if not research_text or len(research_text) < 50:
+            return "لا توجد معلومات مرجعية — اعتمد على معرفتك التاريخية."
+        
+        # Split research into sentences
+        sentences = re.split(r'[.،؟!]\s', research_text)
+        
+        # Keywords from points
+        keywords = set()
+        for p in points:
+            for word in p.split():
+                if len(word) > 3:
+                    keywords.add(word)
+        # Add chapter-related keywords
+        for word in chapter_name.split():
+            if len(word) > 3:
+                keywords.add(word)
+        
+        # Find relevant sentences
+        relevant = []
+        for sent in sentences:
+            matches = sum(1 for kw in keywords if kw in sent)
+            if matches >= 1:
+                relevant.append(sent.strip())
+        
+        if relevant:
+            # Return up to 500 chars of relevant research
+            result = ". ".join(relevant)
+            return result[:800] if len(result) > 800 else result
+        
+        # Fallback: return a chunk of the research
+        chunk_size = min(500, len(research_text))
+        return research_text[:chunk_size] + "..."
 
     @staticmethod
     def _strip_tashkeel(text):

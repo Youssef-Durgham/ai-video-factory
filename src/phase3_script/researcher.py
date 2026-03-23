@@ -86,7 +86,7 @@ class Researcher:
                 prompt=prompt,
                 system=SYNTHESIS_SYSTEM,
                 temperature=0.4,
-                max_tokens=8192,
+                # Uses DEFAULT_PREDICT (24K) — enough for thinking + research output
             )
 
             word_count = len(research_text.split())
