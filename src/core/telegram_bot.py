@@ -84,7 +84,19 @@ class TelegramBot:
         """Build and return the Application (for handler registration)."""
         if self._app is None:
             self._app = Application.builder().token(self.token).build()
+            self._register_handlers(self._app)
         return self._app
+
+    def _register_handlers(self, app: Application):
+        """Register command and callback handlers."""
+        try:
+            from src.core.telegram_commands import register_commands
+            from src.core.telegram_callbacks import register_callbacks
+            register_commands(app)
+            register_callbacks(app)
+            logger.info("Telegram interactive handlers registered")
+        except Exception as e:
+            logger.warning(f"Failed to register interactive handlers: {e}")
 
     @property
     def app(self) -> Application:
@@ -97,12 +109,18 @@ class TelegramBot:
         return self._bot  # type: ignore[return-value]
 
     async def start_polling(self):
-        """Start the bot in polling mode (blocks)."""
+        """Start the bot in polling mode (blocks forever)."""
         app = self.build_app()
         await app.initialize()
         await app.start()
         await app.updater.start_polling(drop_pending_updates=True)
         logger.info("Telegram bot polling started")
+        # Keep alive — block until cancelled
+        try:
+            while True:
+                await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            pass
 
     async def stop(self):
         if self._app:

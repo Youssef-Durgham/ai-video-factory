@@ -1,66 +1,55 @@
-# ═══════════════════════════════════════════
-# AI Video Factory — Channel Definitions
-# ═══════════════════════════════════════════
-
 channels:
-  - id: "documentary_ar"
-    name: "وثائقيات"
-    youtube_channel_id: "UC_REPLACE_ME"
-    category: "documentary"
-    topics: ["history", "science", "culture", "mysteries", "geopolitics"]
+- brand:
+    intro: config/brands/documentary_ar/intro.mp4
+    logo: config/brands/documentary_ar/logo.png
+    lower_third_style: glass_blur
+    outro: config/brands/documentary_ar/outro.mp4
+    text_animation: fade_slide_right
+    watermark: config/brands/documentary_ar/watermark.png
+  category: documentary
+  content:
+    language: MSA
+    narrative_styles:
+    - investigative
+    - storytelling
+    - explainer
+    script_guidelines: '- Use dramatic hooks with rhetorical questions
 
-    voice:
-      default_voice_id: "v_male_auth_01"
-      allow_voice_switch: false
+      - Include surprising facts
 
-    style:
-      visual: "cinematic_photorealistic"
-      color_palette: ["#1a1a2e", "#16213e", "#0f3460", "#e94560"]
-      lora: "photojournalism.safetensors"
-      font_title: "Cairo Bold"
-      font_body: "Tajawal Regular"
+      - End with thought-provoking conclusion
 
-    content:
-      tone: "educational, engaging, slightly dramatic"
-      target_length_min: [8, 12]
-      language: "MSA"
-      narrative_styles: ["investigative", "storytelling", "explainer"]
-      script_guidelines: |
-        - Use dramatic hooks with rhetorical questions
-        - Include surprising facts
-        - End with thought-provoking conclusion
-        - Minimum 2 emotional peaks per script
+      - Minimum 2 emotional peaks per script
 
-    brand:
-      logo: "config/brands/documentary_ar/logo.png"
-      intro: "config/brands/documentary_ar/intro.mp4"
-      outro: "config/brands/documentary_ar/outro.mp4"
-      watermark: "config/brands/documentary_ar/watermark.png"
-      lower_third_style: "glass_blur"
-      text_animation: "fade_slide_right"
-
-    schedule:
-      videos_per_day: 1
-      posting_time: "18:00"
-      timezone: "Asia/Baghdad"
-      shorts_per_video: 3
-
-  # ─── Example: Science Channel ────────────
-  # - id: "science_ar"
-  #   name: "علوم"
-  #   youtube_channel_id: "UC_REPLACE_ME"
-  #   category: "science"
-  #   topics: ["technology", "space", "biology", "physics"]
-  #   voice:
-  #     default_voice_id: null
-  #     allow_voice_switch: true
-  #   style:
-  #     visual: "modern_clean"
-  #   content:
-  #     tone: "clear, educational, engaging"
-  #     target_length_min: [8, 14]
-  #     language: "MSA"
-  #   schedule:
-  #     videos_per_day: 1
-  #     posting_time: "17:00"
-  #     timezone: "Asia/Baghdad"
+      '
+    target_length_min:
+    - 8
+    - 12
+    tone: educational, engaging, slightly dramatic
+  id: documentary_ar
+  name: المتحري
+  schedule:
+    posting_time: '18:00'
+    shorts_per_video: 3
+    timezone: Asia/Baghdad
+    videos_per_day: 1
+  style:
+    color_palette:
+    - '#1a1a2e'
+    - '#16213e'
+    - '#0f3460'
+    - '#e94560'
+    font_body: Tajawal Regular
+    font_title: Cairo Bold
+    lora: photojournalism.safetensors
+    visual: cinematic_photorealistic
+  topics:
+  - history
+  - science
+  - culture
+  - mysteries
+  - geopolitics
+  voice:
+    allow_voice_switch: false
+    default_voice_id: v_male_auth_01
+  youtube_channel_id: UC_REPLACE_ME

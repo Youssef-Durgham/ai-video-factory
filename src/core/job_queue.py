@@ -104,7 +104,8 @@ class JobQueue:
         row = self.db.conn.execute("""
             SELECT jq.job_id FROM job_queue jq
             JOIN jobs j ON jq.job_id = j.id
-            WHERE j.status NOT IN ('published', 'cancelled', 'complete')
+            WHERE j.status NOT IN ('published', 'cancelled', 'complete',
+                                   'manual_review', 'blocked')
             AND (jq.scheduled_start IS NULL OR jq.scheduled_start <= CURRENT_TIMESTAMP)
             ORDER BY jq.priority ASC, jq.position ASC
             LIMIT 1

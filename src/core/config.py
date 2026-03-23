@@ -10,12 +10,16 @@ import logging
 from pathlib import Path
 from typing import Optional
 from functools import lru_cache
+from dotenv import load_dotenv
 
 logger = logging.getLogger(__name__)
 
 # Resolve project root (ai-video-factory/)
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 CONFIG_DIR = PROJECT_ROOT / "config"
+
+# Load .env from project root
+load_dotenv(PROJECT_ROOT / ".env")
 
 
 def load_config(config_dir: Optional[Path] = None) -> dict:

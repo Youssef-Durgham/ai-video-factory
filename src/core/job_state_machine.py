@@ -7,6 +7,7 @@ Resumable after crashes via SQLite-persisted status.
 
 from enum import Enum
 from typing import Optional
+from datetime import datetime
 import logging
 
 logger = logging.getLogger(__name__)
@@ -19,17 +20,18 @@ class JobStatus(str, Enum):
     SCRIPT        = "script"
     COMPLIANCE    = "compliance"
 
-    # Phase 5+6 sub-states (interleaved generation + verification)
+    # Phase 5+6 sub-states
+    # ORDER: images → voice/music/sfx → video (video length = voice length)
     IMAGES        = "images"
     IMAGE_QA      = "image_qa"
     IMAGE_REGEN   = "image_regen"
-    VIDEO         = "video"
+    VOICE         = "voice"         # Voice BEFORE video — determines duration
+    MUSIC         = "music"         # Music scored to voice duration
+    SFX           = "sfx"           # SFX timed to scenes
+    VIDEO         = "video"         # Video generated to match voice duration
     VIDEO_QA      = "video_qa"
     VIDEO_REGEN   = "video_regen"
-    VOICE         = "voice"
-    MUSIC         = "music"
-    SFX           = "sfx"
-    COMPOSE       = "compose"
+    COMPOSE       = "compose"       # Final assembly: video + voice + music + sfx
     OVERLAY_QA    = "overlay_qa"
 
     FINAL_QA      = "final_qa"
@@ -54,19 +56,21 @@ TRANSITIONS: dict[JobStatus, list[JobStatus]] = {
     JobStatus.PENDING:       [JobStatus.RESEARCH],
     JobStatus.RESEARCH:      [JobStatus.SEO, JobStatus.BLOCKED],
     JobStatus.SEO:           [JobStatus.SCRIPT, JobStatus.BLOCKED],
-    JobStatus.SCRIPT:        [JobStatus.COMPLIANCE, JobStatus.BLOCKED],
+    JobStatus.SCRIPT:        [JobStatus.COMPLIANCE, JobStatus.MANUAL_REVIEW, JobStatus.BLOCKED],
     JobStatus.COMPLIANCE:    [JobStatus.IMAGES, JobStatus.BLOCKED],
 
     # Phase 5+6 sub-pipeline
+    # NEW ORDER: images → voice → music → sfx → video → compose
+    # Voice/music/sfx FIRST so video knows the target duration
     JobStatus.IMAGES:        [JobStatus.IMAGE_QA, JobStatus.BLOCKED],
-    JobStatus.IMAGE_QA:      [JobStatus.VIDEO, JobStatus.IMAGE_REGEN, JobStatus.BLOCKED],
+    JobStatus.IMAGE_QA:      [JobStatus.VOICE, JobStatus.IMAGE_REGEN, JobStatus.BLOCKED],
     JobStatus.IMAGE_REGEN:   [JobStatus.IMAGE_QA],
-    JobStatus.VIDEO:         [JobStatus.VIDEO_QA, JobStatus.BLOCKED],
-    JobStatus.VIDEO_QA:      [JobStatus.VOICE, JobStatus.VIDEO_REGEN, JobStatus.BLOCKED],
-    JobStatus.VIDEO_REGEN:   [JobStatus.VIDEO_QA],
     JobStatus.VOICE:         [JobStatus.MUSIC, JobStatus.BLOCKED],
     JobStatus.MUSIC:         [JobStatus.SFX, JobStatus.BLOCKED],
-    JobStatus.SFX:           [JobStatus.COMPOSE, JobStatus.BLOCKED],
+    JobStatus.SFX:           [JobStatus.VIDEO, JobStatus.BLOCKED],
+    JobStatus.VIDEO:         [JobStatus.VIDEO_QA, JobStatus.BLOCKED],
+    JobStatus.VIDEO_QA:      [JobStatus.COMPOSE, JobStatus.VIDEO_REGEN, JobStatus.BLOCKED],
+    JobStatus.VIDEO_REGEN:   [JobStatus.VIDEO_QA],
     JobStatus.COMPOSE:       [JobStatus.OVERLAY_QA, JobStatus.BLOCKED],
     JobStatus.OVERLAY_QA:    [JobStatus.FINAL_QA, JobStatus.COMPOSE, JobStatus.BLOCKED],
 
@@ -209,3 +213,32 @@ class JobStateMachine:
     def is_paused(self, status: JobStatus) -> bool:
         """Check if status is a pause state (waiting for human or blocked)."""
         return status in PAUSE_STATES
+
+    def force_reset(self, job_id: str, to_status: JobStatus) -> JobStatus:
+        """
+        Force-reset a job to any phase (for manual rewind).
+        Bypasses normal transition rules. Clears blocked state.
+        Returns previous status.
+        """
+        job = self.db.get_job(job_id)
+        if not job:
+            raise StateError(f"Job not found: {job_id}")
+
+        current = JobStatus(job["status"])
+
+        # Clear blocked state
+        self.db.conn.execute("""
+            UPDATE jobs SET
+                status = ?,
+                blocked_at = NULL,
+                blocked_reason = NULL,
+                blocked_phase = NULL,
+                manual_review_required = FALSE,
+                manual_review_status = NULL,
+                updated_at = ?
+            WHERE id = ?
+        """, (to_status.value, datetime.utcnow().isoformat(), job_id))
+        self.db.conn.commit()
+
+        logger.info(f"Job {job_id}: FORCE RESET {current.value} → {to_status.value}")
+        return current

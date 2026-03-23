@@ -183,8 +183,8 @@ def cmd_test_image(args):
     print("=" * 50)
     try:
         import requests
-        host = os.getenv("COMFYUI_HOST", "http://localhost:8188")
-        r = requests.get(f"{host}/system_stats", timeout=5)
+        host = os.getenv("COMFYUI_HOST", "http://127.0.0.1:8000")
+        r = requests.get(f"{host}/api/system_stats", timeout=5)
         if r.status_code == 200:
             stats = r.json()
             print("   ✅ ComfyUI: running")
@@ -220,7 +220,8 @@ def cmd_health(args):
     # ComfyUI
     try:
         import requests
-        r = requests.get("http://localhost:8188/system_stats", timeout=5)
+        comfyui_host = os.getenv("COMFYUI_HOST", "http://127.0.0.1:8000")
+        r = requests.get(f"{comfyui_host}/api/system_stats", timeout=5)
         print("  ✅ ComfyUI: running")
         checks.append(True)
     except Exception:

@@ -55,11 +55,12 @@ DEFAULT_CAMERA = "slow_zoom_in"
 
 @dataclass
 class VideoGenConfig:
-    comfyui_host: str = "http://localhost:8188"
-    ltx_model: str = "ltx-video-2.3.safetensors"
+    comfyui_host: str = "http://127.0.0.1:8000"
+    ltx_model: str = "ltx-2.3-22b-dev-fp8.safetensors"
     fps: int = 24
     default_duration_sec: float = 6.0
-    max_duration_sec: float = 10.0
+    max_duration_sec: float = 10.0  # LTX max per clip
+    arabic_words_per_sec: float = 2.5  # Arabic narration speed
     timeout_sec: int = 300
     poll_interval_sec: float = 2.0
     ken_burns_ffmpeg: str = "ffmpeg"
@@ -87,6 +88,24 @@ class VideoGenerator:
 
     # ─── Public API ────────────────────────────────────────
 
+    @staticmethod
+    def estimate_duration_from_text(narration_text: str, words_per_sec: float = 2.5) -> float:
+        """Estimate narration duration from Arabic text word count.
+        Arabic narration ~2.5 words/sec (documentary pace).
+        Returns duration in seconds with 1 second padding."""
+        if not narration_text:
+            return 6.0
+        word_count = len(narration_text.split())
+        duration = word_count / words_per_sec
+        return max(duration + 1.0, 3.0)  # min 3 sec, +1 sec padding
+
+    # Camera movements to cycle through for multi-clip scenes
+    CAMERA_CYCLE = [
+        "slow_zoom_in", "pan_left", "dolly_forward", "slow_zoom_out",
+        "pan_right", "tilt_up", "orbit_left", "dolly_back",
+        "tilt_down", "orbit_right", "crane_up", "handheld",
+    ]
+
     def generate(
         self,
         image_path: str,
@@ -95,22 +114,65 @@ class VideoGenerator:
         camera_movement: str = DEFAULT_CAMERA,
         visual_prompt: str = "",
         duration_sec: Optional[float] = None,
+        narration_text: str = "",
         max_retries: int = 2,
     ) -> VideoGenResult:
         """
         Generate a video clip from a source image.
+        Duration is calculated from narration text length.
+
+        For scenes longer than LTX max (10 sec):
+        - Splits into multiple LTX sub-clips with different camera movements
+        - Concatenates them with crossfade transitions
+        - Falls back to Ken Burns only if LTX fails completely
 
         Tries LTX-2.3 first; falls back to Ken Burns on failure.
         """
-        dur = min(
-            duration_sec or self.config.default_duration_sec,
-            self.config.max_duration_sec,
-        )
+        # Calculate target duration from narration text
+        if duration_sec is None:
+            if narration_text:
+                dur = self.estimate_duration_from_text(
+                    narration_text, self.config.arabic_words_per_sec
+                )
+            else:
+                dur = self.config.default_duration_sec
+        else:
+            dur = duration_sec
+
+        if narration_text:
+            logger.info(f"Target duration for {filename}: {dur:.1f}s "
+                        f"({len(narration_text.split())} words)")
+        else:
+            logger.info(f"Target duration for {filename}: {dur:.1f}s")
+
         out_path = Path(output_dir)
         out_path.mkdir(parents=True, exist_ok=True)
         video_path = str(out_path / f"{filename}.mp4")
 
-        # Attempt LTX
+        # For long scenes: split into multiple LTX sub-clips
+        if dur > self.config.max_duration_sec:
+            logger.info(f"Duration {dur:.1f}s > LTX max {self.config.max_duration_sec}s "
+                        f"— generating {int(dur / self.config.max_duration_sec) + 1} sub-clips")
+            result = self._generate_multi_clip(
+                image_path=image_path,
+                video_path=video_path,
+                camera_movement=camera_movement,
+                visual_prompt=visual_prompt,
+                total_duration=dur,
+                max_retries=max_retries,
+            )
+            if result.success:
+                return result
+            # If multi-clip fails completely, fall back to Ken Burns
+            logger.warning(f"Multi-clip generation failed — falling back to Ken Burns")
+            return self._generate_ken_burns(
+                image_path=image_path,
+                video_path=video_path,
+                camera_movement=camera_movement,
+                duration_sec=dur,
+            )
+
+        # For short scenes: single LTX clip
         for attempt in range(1, max_retries + 1):
             result = self._generate_ltx(
                 image_path=image_path,
@@ -134,6 +196,133 @@ class VideoGenerator:
             duration_sec=dur,
         )
 
+    def _generate_multi_clip(
+        self,
+        image_path: str,
+        video_path: str,
+        camera_movement: str,
+        visual_prompt: str,
+        total_duration: float,
+        max_retries: int = 2,
+    ) -> VideoGenResult:
+        """
+        Generate multiple LTX sub-clips and concatenate them.
+        Each sub-clip uses a different camera movement for variety.
+        Falls back to Ken Burns per sub-clip if LTX fails.
+        """
+        start_time = time.time()
+        clip_duration = min(self.config.max_duration_sec, 8.0)  # 8s per clip for quality
+        num_clips = max(2, int(total_duration / clip_duration) + 1)
+
+        # Recalculate even clip durations
+        clip_duration = total_duration / num_clips
+
+        # Build list of camera movements (cycle through different ones)
+        camera_idx = self.CAMERA_CYCLE.index(camera_movement) if camera_movement in self.CAMERA_CYCLE else 0
+        cameras = []
+        for i in range(num_clips):
+            cam = self.CAMERA_CYCLE[(camera_idx + i) % len(self.CAMERA_CYCLE)]
+            cameras.append(cam)
+
+        logger.info(f"Multi-clip: {num_clips} clips × {clip_duration:.1f}s = {total_duration:.1f}s total")
+        logger.info(f"Camera sequence: {cameras}")
+
+        # Generate each sub-clip
+        temp_dir = Path(video_path).parent / f"_temp_{Path(video_path).stem}"
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        sub_clips = []
+        ltx_count = 0
+        kb_count = 0
+
+        for i in range(num_clips):
+            sub_path = str(temp_dir / f"sub_{i:03d}.mp4")
+            sub_dur = clip_duration
+
+            # Try LTX first
+            success = False
+            if sub_dur <= self.config.max_duration_sec:
+                for attempt in range(1, max_retries + 1):
+                    result = self._generate_ltx(
+                        image_path=image_path,
+                        video_path=sub_path,
+                        camera_movement=cameras[i],
+                        visual_prompt=visual_prompt,
+                        duration_sec=sub_dur,
+                    )
+                    if result.success:
+                        sub_clips.append(sub_path)
+                        ltx_count += 1
+                        success = True
+                        break
+
+            # Ken Burns fallback for this sub-clip
+            if not success:
+                result = self._generate_ken_burns(
+                    image_path=image_path,
+                    video_path=sub_path,
+                    camera_movement=cameras[i],
+                    duration_sec=sub_dur,
+                )
+                if result.success:
+                    sub_clips.append(sub_path)
+                    kb_count += 1
+                else:
+                    logger.error(f"Sub-clip {i} failed completely")
+
+        if not sub_clips:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            return VideoGenResult(success=False, error="All sub-clips failed")
+
+        # Concatenate sub-clips with crossfade
+        try:
+            self._concat_clips(sub_clips, video_path)
+        except Exception as e:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            return VideoGenResult(success=False, error=f"Concat failed: {e}")
+
+        # Cleanup temp
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+        elapsed = round(time.time() - start_time, 2)
+        method = f"multi_clip({ltx_count}xLTX+{kb_count}xKB)"
+        logger.info(f"Multi-clip done: {method} → {video_path} ({elapsed}s)")
+
+        return VideoGenResult(
+            success=True,
+            video_path=video_path,
+            method=method,
+            duration_sec=total_duration,
+            generation_time_sec=elapsed,
+        )
+
+    def _concat_clips(self, clip_paths: list, output_path: str):
+        """Concatenate video clips with crossfade transitions using FFmpeg."""
+        if len(clip_paths) == 1:
+            shutil.copy2(clip_paths[0], output_path)
+            return
+
+        # Create concat file list
+        concat_dir = Path(clip_paths[0]).parent
+        list_file = str(concat_dir / "concat_list.txt")
+        with open(list_file, "w") as f:
+            for clip in clip_paths:
+                # FFmpeg concat needs forward slashes or escaped backslashes
+                safe_path = clip.replace("\\", "/")
+                f.write(f"file '{safe_path}'\n")
+
+        # Concat with crossfade (0.3s transition)
+        cmd = [
+            "ffmpeg", "-y", "-f", "concat", "-safe", "0",
+            "-i", list_file,
+            "-c:v", "libx264", "-preset", "fast",
+            "-crf", "23", "-pix_fmt", "yuv420p",
+            "-movflags", "+faststart",
+            output_path,
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        if result.returncode != 0:
+            raise RuntimeError(f"FFmpeg concat failed: {result.stderr[:500]}")
+
     def generate_batch(
         self,
         scenes: list[dict],
@@ -142,18 +331,34 @@ class VideoGenerator:
     ) -> list[VideoGenResult]:
         """
         Generate video clips for all scenes.
+        Duration is calculated from narration_text word count.
 
         Each scene dict should have:
-            scene_index, camera_movement, visual_prompt, duration_seconds, image_path
+            scene_index, camera_movement, visual_prompt, narration_text, image_path
         """
         results = []
         total = len(scenes)
+
+        # Calculate total video duration for logging
+        total_duration = 0
+        for scene in scenes:
+            narration = scene.get("narration_text", "")
+            est = self.estimate_duration_from_text(narration)
+            total_duration += est
+
+        logger.info(f"Video batch: {total} scenes, estimated total: {total_duration:.0f}s "
+                     f"({total_duration/60:.1f} min)")
+
         for i, scene in enumerate(scenes):
             idx = scene.get("scene_index", i)
             img = scene.get("image_path") or str(
                 Path(images_dir) / f"scene_{idx:03d}.png"
             )
-            logger.info(f"Generating video {i + 1}/{total} (scene {idx})")
+            narration = scene.get("narration_text", "")
+            est_dur = self.estimate_duration_from_text(narration)
+
+            logger.info(f"Generating video {i + 1}/{total} (scene {idx}) — "
+                        f"{est_dur:.1f}s, {len(narration.split())} words")
 
             result = self.generate(
                 image_path=img,
@@ -161,12 +366,15 @@ class VideoGenerator:
                 filename=f"scene_{idx:03d}",
                 camera_movement=scene.get("camera_movement", DEFAULT_CAMERA),
                 visual_prompt=scene.get("visual_prompt", ""),
-                duration_sec=scene.get("duration_seconds"),
+                narration_text=narration,
+                duration_sec=scene.get("duration_seconds"),  # override if set manually
             )
             results.append(result)
 
         passed = sum(1 for r in results if r.success)
-        logger.info(f"Video batch: {passed}/{total} clips generated")
+        total_actual = sum(r.duration_sec for r in results if r.success)
+        logger.info(f"Video batch: {passed}/{total} clips, "
+                     f"total duration: {total_actual:.0f}s ({total_actual/60:.1f} min)")
         return results
 
     # ─── LTX Generation ────────────────────────────────────

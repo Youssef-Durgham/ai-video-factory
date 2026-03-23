@@ -28,7 +28,7 @@ ollama:
 
 # ─── ComfyUI (Image/Video Gen) ────────────
 comfyui:
-  host: "http://localhost:8188"
+  host: "http://127.0.0.1:8000"
   workflows_dir: "config/comfyui_workflows/"
   models:
     flux: "flux1-dev.safetensors"

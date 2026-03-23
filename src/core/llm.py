@@ -12,7 +12,8 @@ logger = logging.getLogger(__name__)
 
 OLLAMA_HOST = "http://localhost:11434"
 DEFAULT_MODEL = "qwen3.5:27b"
-TIMEOUT = 600  # 10 min
+DEFAULT_CTX = 32768  # 32K context — sweet spot for speed vs capacity
+TIMEOUT = 1200  # 20 min — scripts can take long with thinking mode
 
 
 def generate(
@@ -31,6 +32,7 @@ def generate(
         "options": {
             "temperature": temperature,
             "num_predict": max_tokens,
+            "num_ctx": DEFAULT_CTX,
         },
     }
     if system:
@@ -45,7 +47,12 @@ def generate(
             timeout=TIMEOUT,
         )
         resp.raise_for_status()
-        return resp.json()["response"]
+        data = resp.json()
+        # Qwen 3.5 with thinking mode puts content in "thinking" when "response" is empty
+        response = data.get("response", "")
+        if not response.strip() and data.get("thinking"):
+            response = data["thinking"]
+        return response
     except requests.Timeout:
         logger.error(f"Ollama timeout after {TIMEOUT}s")
         raise
@@ -110,6 +117,7 @@ def chat(
         "options": {
             "temperature": temperature,
             "num_predict": max_tokens,
+            "num_ctx": DEFAULT_CTX,
         },
     }
     if json_mode:

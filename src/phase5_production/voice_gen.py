@@ -205,6 +205,10 @@ class VoiceGenerator:
         Path(output_dir).mkdir(parents=True, exist_ok=True)
         mp3_path = str(Path(output_dir) / f"{filename}.mp3")
 
+        # Preprocess Arabic text — convert numbers to words, add pacing
+        from src.phase5_production.arabic_text_processor import process_arabic_for_tts
+        text = process_arabic_for_tts(text)
+
         # Resolve voice profile — use mood-specific reference if available
         voice_profile = None
         if voice_id:

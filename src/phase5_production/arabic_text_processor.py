@@ -38,7 +38,7 @@ HUNDREDS = {
 
 
 def _number_to_arabic(n: int) -> str:
-    """Convert integer to Arabic words (0-999999)."""
+    """Convert integer to Arabic words (supports 0 up to trillions)."""
     if n == 0:
         return "صفر"
     if n < 0:
@@ -46,6 +46,33 @@ def _number_to_arabic(n: int) -> str:
 
     parts = []
 
+    # Billions (مليار)
+    if n >= 1_000_000_000:
+        billions = n // 1_000_000_000
+        n %= 1_000_000_000
+        if billions == 1:
+            parts.append("مليار")
+        elif billions == 2:
+            parts.append("ملياران")
+        elif 3 <= billions <= 10:
+            parts.append(_number_to_arabic(billions) + " مليارات")
+        else:
+            parts.append(_number_to_arabic(billions) + " مليار")
+
+    # Millions (مليون)
+    if n >= 1_000_000:
+        millions = n // 1_000_000
+        n %= 1_000_000
+        if millions == 1:
+            parts.append("مليون")
+        elif millions == 2:
+            parts.append("مليونان")
+        elif 3 <= millions <= 10:
+            parts.append(_number_to_arabic(millions) + " ملايين")
+        else:
+            parts.append(_number_to_arabic(millions) + " مليون")
+
+    # Thousands (ألف)
     if n >= 1000:
         thousands = n // 1000
         n %= 1000
@@ -143,7 +170,49 @@ def process_arabic_for_tts(text: str) -> str:
     for abbr, expansion in ABBREVIATIONS.items():
         text = re.sub(rf'\b{re.escape(abbr)}\b', expansion, text)
 
-    # 2. Convert numbers to words + add pacing pauses around data
+    # 2. Percentage (before number conversion so digits are still present)
+    text = re.sub(r'(\d[\d,]*)\s*%', lambda m: _number_to_arabic(int(m.group(1).replace(',', ''))) + " بالمئة", text)
+
+    # 2a. Handle decimal numbers with scale words (2.5 مليار → مليارين ونصف)
+    def _replace_decimal_scale(m):
+        whole = int(m.group(1))
+        frac = m.group(2)  # digits after decimal
+        scale = m.group(3)
+        # Common fractions
+        frac_text = ""
+        if frac == "5":
+            frac_text = " ونصف"
+        elif frac == "25":
+            frac_text = " وربع"
+        elif frac == "75":
+            frac_text = " وثلاثة أرباع"
+        else:
+            frac_text = " فاصلة " + _number_to_arabic(int(frac))
+        return f"، {_number_to_arabic(whole)}{frac_text} {scale}،"
+
+    for scale in ['مليار', 'مليارات', 'مليون', 'ملايين', 'ألف', 'آلاف', 'ترليون', 'تريليون']:
+        text = re.sub(rf'(\d+)\.(\d+)\s+({re.escape(scale)})\b', _replace_decimal_scale, text)
+
+    # 2b. Handle comma-separated numbers (500,000 → 500000)
+    text = re.sub(r'(\d{1,3}(?:,\d{3})+)', lambda m: m.group(0).replace(',', ''), text)
+
+    # 2c. Handle "number + Arabic scale word" patterns (350 مليار → ثلاثمئة وخمسون مليار)
+    scale_words = {
+        'مليار': 'مليار', 'مليارات': 'مليارات',
+        'مليون': 'مليون', 'ملايين': 'ملايين',
+        'ألف': 'ألف', 'آلاف': 'آلاف',
+        'ترليون': 'ترليون', 'تريليون': 'تريليون',
+    }
+    for scale in scale_words:
+        def _replace_scale_num(m, s=scale):
+            try:
+                n = int(m.group(1))
+                return f"، {_number_to_arabic(n)} {s}،"
+            except ValueError:
+                return m.group(0)
+        text = re.sub(rf'\b(\d+)\s+{re.escape(scale)}\b', _replace_scale_num, text)
+
+    # 2c. Convert remaining standalone numbers to words
     def _replace_number(m):
         try:
             n = int(m.group(0))
@@ -157,10 +226,7 @@ def process_arabic_for_tts(text: str) -> str:
     # Clean double commas from number insertion
     text = re.sub(r'،\s*،', '،', text)
 
-    # 3. Percentage
-    text = re.sub(r'(\d+)\s*%', lambda m: _number_to_arabic(int(m.group(1))) + " بالمئة", text)
-
-    # 4. Normalize punctuation
+    # 3. Normalize punctuation
     text = text.replace('—', '...')  # Em-dash → dramatic pause
     text = text.replace('–', '،')    # En-dash → comma pause
 
