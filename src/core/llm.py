@@ -93,16 +93,27 @@ def generate_json(
     model: str = DEFAULT_MODEL,
     temperature: float = 0.5,
     max_tokens: int = 8192,
+    retries: int = 2,
 ) -> dict:
-    """Generate and parse JSON from Ollama."""
-    raw = generate(
-        prompt=prompt,
-        system=system,
-        model=model,
-        temperature=temperature,
-        max_tokens=max_tokens,
-        json_mode=True,
-    )
+    """Generate and parse JSON from Ollama. Retries on empty/invalid response."""
+    for attempt in range(retries + 1):
+        raw = generate(
+            prompt=prompt,
+            system=system,
+            model=model,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            json_mode=True,
+        )
+        if raw and raw.strip():
+            break
+        if attempt < retries:
+            logger.warning(f"generate_json: empty response (attempt {attempt+1}/{retries+1}), retrying with more tokens")
+            max_tokens = min(max_tokens * 2, 32768)  # Double tokens each retry
+        else:
+            logger.error("generate_json: all retries returned empty response")
+            return {}
+    
     # Try to parse JSON — handle edge cases
     raw = raw.strip()
     # Sometimes model wraps in ```json ... ```
@@ -122,7 +133,7 @@ def generate_json(
         if start >= 0 and end > start:
             return json.loads(raw[start:end])
         logger.error(f"Failed to parse JSON from LLM: {raw[:500]}")
-        raise
+        return {}
 
 
 def chat(

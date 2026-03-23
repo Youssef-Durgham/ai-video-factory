@@ -144,7 +144,16 @@ class SceneSplitter:
                 max_tokens=16384,
             )
 
-            scenes = result.get("scenes", [])
+            if not result:
+                logger.warning("Scene splitter got empty result, retrying with more tokens")
+                result = generate_json(
+                    prompt=prompt,
+                    system=SPLITTER_SYSTEM,
+                    temperature=0.5,
+                    max_tokens=24576,
+                )
+
+            scenes = result.get("scenes", []) if result else []
 
             # Post-process: enhance visual prompts with regional accuracy
             for scene in scenes:
