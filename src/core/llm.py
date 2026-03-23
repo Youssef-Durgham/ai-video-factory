@@ -60,10 +60,21 @@ def generate(
         )
         resp.raise_for_status()
         data = resp.json()
-        # Qwen 3.5 with thinking mode puts content in "thinking" when "response" is empty
         response = data.get("response", "")
-        if not response.strip() and data.get("thinking"):
-            response = data["thinking"]
+        thinking = data.get("thinking", "")
+        
+        # Log token usage for debugging
+        eval_count = data.get("eval_count", 0)
+        if thinking:
+            logger.debug(f"Thinking: {len(thinking)} chars, Response: {len(response)} chars, eval_count: {eval_count}")
+        
+        # If response is empty but thinking exists, the model spent all tokens thinking.
+        # Do NOT use thinking as response — it's internal reasoning (often in English).
+        if not response.strip():
+            if thinking:
+                logger.warning(f"Response empty but thinking has {len(thinking)} chars — model exhausted tokens on thinking. Returning empty.")
+            return ""
+        
         return response
     except requests.Timeout:
         logger.error(f"Ollama timeout after {TIMEOUT}s")

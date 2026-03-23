@@ -152,10 +152,23 @@ class ScriptWriter:
                 research_text=research_text,
             ),
             system=f"أنت خبير في التخطيط الوثائقي. خطط فقط لموضوع: {topic}",
-            max_tokens=4096,
+            max_tokens=8192,
             temperature=0.7,
             think=True,  # Thinking ON — planning benefits from reasoning
         )
+        
+        # Fallback if thinking exhausted tokens
+        if not outline or len(outline.strip()) < 100:
+            logger.warning("Outline empty (thinking exhausted tokens), retrying without thinking")
+            outline = generate(
+                prompt=OUTLINE_PROMPT.format(
+                    topic=topic, angle=angle, research_text=research_text,
+                ),
+                system=f"أنت خبير في التخطيط الوثائقي. خطط فقط لموضوع: {topic}",
+                max_tokens=4096,
+                temperature=0.7,
+                think=False,
+            )
 
         if not outline or len(outline.strip()) < 100:
             logger.error("Outline generation failed — empty result")
@@ -201,10 +214,26 @@ class ScriptWriter:
                     chapter_points=points,
                 ),
                 system=WRITER_SYSTEM,
-                max_tokens=4096,  # 300-400 words fits easily even with thinking
+                max_tokens=8192,  # Thinking takes ~3-4K, leaving ~4K for 400+ words
                 temperature=0.6,
                 think=True,  # Thinking ON — each chapter is short enough
             )
+            
+            # If thinking exhausted all tokens (empty response), retry without thinking
+            if not chapter_text or len(chapter_text.strip()) < 50:
+                logger.warning(f"  → {chapter_name}: thinking exhausted tokens, retrying without thinking")
+                chapter_text = generate(
+                    prompt=CHAPTER_PROMPT.format(
+                        topic=topic,
+                        outline=outline,
+                        chapter_name=chapter_name,
+                        chapter_points=points,
+                    ),
+                    system=WRITER_SYSTEM,
+                    max_tokens=4096,
+                    temperature=0.6,
+                    think=False,  # Fallback: no thinking
+                )
 
             if chapter_text and len(chapter_text.strip()) > 50:
                 cleaned = self._extract_narration(chapter_text)
