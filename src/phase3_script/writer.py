@@ -94,30 +94,22 @@ DURATION_MINUTES: [الرقم]
 # Step 2: Chapter expansion prompt — thinking ON for depth
 # ════════════════════════════════════════════════════════════════
 
-CHAPTER_PROMPT = """أنت تكتب فصلاً واحداً من سكربت وثائقي عن: "{topic}"
+CHAPTER_PROMPT = """الموضوع: "{topic}"
+المطلوب: اكتب **{chapter_name}** — حوالي {chapter_words} كلمة ({chapter_minutes} دقائق).
 
-المدة الإجمالية للوثائقي: {total_minutes} دقائق
-هذا الفصل يجب أن يكون حوالي {chapter_words} كلمة ({chapter_minutes} دقائق).
-
-هذا هو المخطط الكامل للوثائقي:
-{outline}
-
----
-
-المطلوب الآن: اكتب **{chapter_name}** فقط.
-النقاط التي يجب تغطيتها في هذا الفصل:
+النقاط التي يجب تغطيتها:
 {chapter_points}
 
 التعليمات:
-- اكتب {chapter_words} كلمة على الأقل لهذا الفصل. هذا ليس اختيارياً.
-- ابدأ بالتوجيهات البصرية والصوتية [بصري: ...] [صوتي: ...] ثم السرد مباشرة.
-- استخدم أسلوب العدسة المكبرة: تفصيل دقيق → صورة كبرى.
-- لا تكتب "المعلق:" أو "السرد:" — اكتب النص مباشرة.
+- اكتب {chapter_words} كلمة على الأقل. هذا ليس اختيارياً.
+- [بصري: ...] و [صوتي: ...] قبل كل مقطع سردي.
+- أسلوب العدسة المكبرة: تفصيل دقيق → صورة كبرى.
+- لا تكتب "المعلق:" أو "السرد:" — النص مباشرة.
 - الأرقام بالحروف العربية فقط.
 - التشكيل الجزئي فقط عند الضرورة.
-- لا تكتب أي عبارة عن الاشتراك أو الإعجاب أو الجرس.
+- ممنوع: اشتراك، إعجاب، جرس.
 
-اكتب هذا الفصل الآن بعمق وتفصيل — كأنك مخرج يصوّر كل لقطة."""
+اكتب الآن."""
 
 
 class ScriptWriter:
@@ -223,10 +215,8 @@ class ScriptWriter:
             chapter_text = generate(
                 prompt=CHAPTER_PROMPT.format(
                     topic=topic,
-                    outline=outline,
                     chapter_name=chapter_name,
                     chapter_points=points,
-                    total_minutes=total_minutes,
                     chapter_words=ch_words,
                     chapter_minutes=ch_minutes,
                 ),

@@ -94,6 +94,7 @@ def generate(
                     return response2
             except Exception as e2:
                 logger.warning(f"Retry without thinking failed: {e2}")
+            logger.error("Both thinking and /no_think attempts returned empty")
             return ""
         
         if not response.strip():
