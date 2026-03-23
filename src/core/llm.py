@@ -17,8 +17,8 @@ logger = logging.getLogger(__name__)
 
 OLLAMA_HOST = "http://localhost:11434"
 DEFAULT_MODEL = "qwen3.5:27b"
-DEFAULT_CTX = 32768   # 32K context window
-DEFAULT_PREDICT = 32000  # ~32K output tokens — thinking + response combined
+DEFAULT_CTX = 65536   # 64K context window — guarantees thinking never truncates response
+DEFAULT_PREDICT = 64000  # ~64K output tokens — thinking + response combined
 TIMEOUT = 3600  # 60 min
 
 
