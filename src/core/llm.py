@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 OLLAMA_HOST = "http://localhost:11434"
 DEFAULT_MODEL = "qwen3.5:27b"
 DEFAULT_CTX = 32768  # 32K context — sweet spot for speed vs capacity
-TIMEOUT = 1200  # 20 min — scripts can take long with thinking mode
+TIMEOUT = 3600  # 60 min — thinking mode can take very long on complex topics
 
 
 def generate(
