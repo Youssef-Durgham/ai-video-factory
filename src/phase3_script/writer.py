@@ -1,7 +1,9 @@
 """
 Phase 3: Professional Arabic Documentary Script Writer.
-Strategy: Outline → Expand Each Chapter → Merge
-This bypasses LLM output token limits by splitting into multiple calls.
+Strategy: Outline → Expand Each Chapter (split into sub-sections) → Merge
+
+Key insight: Each LLM call handles only 2-3 bullet points.
+This keeps thinking short (~3K tokens) and guarantees response every time.
 """
 
 import logging
@@ -11,7 +13,7 @@ from src.core.llm import generate
 logger = logging.getLogger(__name__)
 
 # ════════════════════════════════════════════════════════════════
-# System prompt — shared across all calls for consistent voice
+# System prompt
 # ════════════════════════════════════════════════════════════════
 
 WRITER_SYSTEM = """[SYSTEM DIRECTIVE - CRITICAL OVERRIDE]
@@ -21,114 +23,108 @@ WRITER_SYSTEM = """[SYSTEM DIRECTIVE - CRITICAL OVERRIDE]
 
 <length_and_depth_enforcement>
 تحذير شديد: يُمنع منعاً باتاً اختصار السكربت أو كتابة ملخصات سريعة.
-1. يجب أن يكون السكربت طويلاً جداً (لا يقل عن 1500 كلمة).
-2. كل فصل (مقدمة، محاور، خاتمة) يجب أن يحتوي على الأقل على 3 فقرات سردية طويلة.
-3. التمدد الأفقي: عند ذكر حدث تاريخي، لا تذكر النتيجة فقط. اشرح (الكواليس، الحالة النفسية للقادة، الغرف المغلقة، وتفاصيل الاغتيالات أو الاتفاقيات).
-4. استخدم أسلوب "العدسة المكبرة": ابدأ بوصف تفصيل دقيق جداً (مثلاً: دخان سيجار، قطرة عرق، أو توقيع على ورقة) ثم انتقل للصورة الجيوسياسية الكبرى.
+1. التمدد الأفقي: عند ذكر حدث تاريخي، لا تذكر النتيجة فقط. اشرح (الكواليس، الحالة النفسية للقادة، الغرف المغلقة، وتفاصيل الاغتيالات أو الاتفاقيات).
+2. استخدم أسلوب "العدسة المكبرة": ابدأ بوصف تفصيل دقيق جداً (مثلاً: دخان سيجار، قطرة عرق، أو توقيع على ورقة) ثم انتقل للصورة الجيوسياسية الكبرى.
 </length_and_depth_enforcement>
 
 <technical_formatting_rules>
 1. منع أسماء المتحدثين: إياك أن تكتب كلمة "المذيع:" أو "المعلق:" أو "السرد:" قبل النص. اكتب النص مباشرة.
-2. تفقيط الأرقام: ممنوع كتابة الأرقام رياضياً (مثل 1979 أو 500). اكتبها بالحروف العربية دائماً (مثل: عام ألف وتسعمئة وتسعة وسبعين، خمس مئة ألف).
+2. تفقيط الأرقام: ممنوع كتابة الأرقام رياضياً (مثل 1979 أو 500). اكتبها بالحروف العربية دائماً.
 </technical_formatting_rules>
 
 <director_cues>
-- التوجيهات البصرية والصوتية توضع بين أقواس مربعة هكذا: [بصري: ...] و [صوتي: ...].
-- التوجيه البصري يجب أن يكون دقيقاً سينمائياً (اذكر حجم اللقطة، الإضاءة، وحركة العناصر) ليكون جاهزاً لمولدات الفيديو.
-  مثال: [بصري: لقطة مقربة جداً (Close-up) بإضاءة سينمائية خافتة، رماد يتطاير في الهواء مع حركة كاميرا بطيئة].
+التوجيهات البصرية والصوتية توضع بين أقواس مربعة: [بصري: ...] و [صوتي: ...].
 </director_cues>
 
 <tashkeel_directive_for_tts>
-هذا السكربت موجه لنظام (TTS).
-- شكّل فقط: الأفعال المبنية للمجهول (مثال: قُتِلَ، دُمِّرَت)، الكلمات الملتبسة (عَقْد/عُقَد)، وأواخر الكلمات عند الوقف في نهاية الجملة.
-- لا تشكّل الحروف العادية.
+شكّل فقط: الأفعال المبنية للمجهول، الكلمات الملتبسة، وأواخر الكلمات عند الوقف.
+لا تشكّل الحروف العادية.
 </tashkeel_directive_for_tts>
 
 <forbidden>
-ممنوع منعاً باتاً:
-- أي عبارة تطلب الاشتراك أو الإعجاب أو تفعيل الجرس أو مشاركة الفيديو أو ترك تعليق.
-- أي إشارة للقناة أو للمشاهد بصيغة "لا تنسَ" أو "اشترك" أو "فعّل".
-- اختم بتأمل فلسفي فقط. لا دعوات عمل (CTA) من أي نوع.
-</forbidden>
-
-ابدأ فوراً بكتابة ما يُطلب منك بناءً على الموضوع المطلوب."""
+ممنوع منعاً باتاً: أي عبارة تطلب الاشتراك أو الإعجاب أو تفعيل الجرس أو مشاركة الفيديو.
+اختم بتأمل فلسفي فقط. لا دعوات عمل (CTA) من أي نوع.
+</forbidden>"""
 
 # ════════════════════════════════════════════════════════════════
-# Step 1: Outline prompt — thinking ON for quality planning
+# Outline prompt
 # ════════════════════════════════════════════════════════════════
 
 OUTLINE_PROMPT = """أنت تخطط لوثائقي عن: "{topic}"
 الزاوية: {angle}
 
 ## المهمة الأولى: تقدير المدة المناسبة
+حلّل الموضوع وقرر:
+- موضوع غني بالأحداث (حروب، صراعات طويلة) → 15-25 دقيقة
+- موضوع متوسط (تحليل ظاهرة، سيرة) → 10-15 دقيقة
+- موضوع خفيف (ماذا لو، حقائق غريبة) → 6-10 دقائق
 
-قبل كتابة المخطط، حلّل الموضوع وقرر:
-- هل هذا موضوع غني بالأحداث والتفاصيل (مثل حروب، صراعات تاريخية طويلة) → يحتاج 15-25 دقيقة
-- هل هو موضوع متوسط العمق (تحليل ظاهرة، سيرة شخصية) → يحتاج 10-15 دقيقة  
-- هل هو موضوع خفيف أو فكرة واحدة (ماذا لو، حقائق غريبة) → يحتاج 6-10 دقائق
-
-اكتب في أول سطر بالضبط هذا الشكل:
-DURATION_MINUTES: [الرقم]
-
-مثال: DURATION_MINUTES: 18
+اكتب في أول سطر: DURATION_MINUTES: [الرقم]
 
 ## المهمة الثانية: المخطط التفصيلي
+اكتب مخططاً من 5 فصول. لكل فصل اكتب نقاط مرقّمة بهذا الشكل:
 
-بناءً على المدة التي حددتها، اكتب مخططاً من 5 فصول.
-كلما كانت المدة أطول، كلما احتجت نقاطاً وتفاصيل أكثر في كل فصل.
+CHAPTER_1: المشهد الافتتاحي (الخطاف)
+- نقطة 1
+- نقطة 2
+- نقطة 3
 
-1. المشهد الافتتاحي (الخطاف): مشهد صادم أو تناقض. اذكر 3-4 نقاط تفصيلية.
-2. الفصل الأول — الجذور: الأحداث والتفاصيل التاريخية الدقيقة. اذكر 5-8 نقاط مع تواريخ وأسماء.
-3. الفصل الثاني — الذروة: لحظات التصادم والمواجهة المباشرة. اذكر 5-8 نقاط مع تفاصيل درامية.
-4. الفصل الثالث — التداعيات: النتائج الكارثية على المنطقة والشعوب. اذكر 4-7 نقاط.
-5. الخاتمة: السؤال الفلسفي والتأمل المظلم. كيف يرتبط بالخطاف؟
+CHAPTER_2: الجذور وبناء التوتر
+- نقطة 1
+- نقطة 2
+...
 
-لكل نقطة: اذكر (الحدث، التاريخ، الأشخاص، التفصيل الدرامي الذي يجب ذكره).
+CHAPTER_3: الذروة الدرامية
+...
+
+CHAPTER_4: التداعيات والانهيار
+...
+
+CHAPTER_5: الخاتمة والتأمل الفلسفي
+...
+
+لكل نقطة: اذكر (الحدث، التاريخ، الأشخاص، التفصيل الدرامي).
 
 الحقائق المرجعية:
 {research_text}
 
-اكتب المخطط الآن. كن مفصلاً جداً — هذا المخطط سيُستخدم لكتابة كل فصل على حدة."""
+اكتب المخطط الآن."""
 
 # ════════════════════════════════════════════════════════════════
-# Step 2: Chapter expansion prompt — thinking ON for depth
+# Sub-section prompt — handles 2-3 points only (keeps thinking short)
 # ════════════════════════════════════════════════════════════════
 
-CHAPTER_PROMPT = """الموضوع: "{topic}"
-المطلوب: اكتب **{chapter_name}** — حوالي {chapter_words} كلمة ({chapter_minutes} دقائق).
+SUBSECTION_PROMPT = """الموضوع: "{topic}"
+الفصل: {chapter_name}
 
-النقاط التي يجب تغطيتها:
-{chapter_points}
+اكتب فقرة سردية وثائقية عن النقاط التالية:
+{points}
 
 التعليمات:
-- اكتب {chapter_words} كلمة على الأقل. هذا ليس اختيارياً.
-- [بصري: ...] و [صوتي: ...] قبل كل مقطع سردي.
+- اكتب 150-250 كلمة عن هذه النقاط فقط.
+- [بصري: ...] و [صوتي: ...] قبل السرد.
 - أسلوب العدسة المكبرة: تفصيل دقيق → صورة كبرى.
-- لا تكتب "المعلق:" أو "السرد:" — النص مباشرة.
-- الأرقام بالحروف العربية فقط.
-- التشكيل الجزئي فقط عند الضرورة.
+- النص مباشرة بدون "المعلق:" أو "السرد:".
+- الأرقام بالحروف العربية.
 - ممنوع: اشتراك، إعجاب، جرس.
 
 اكتب الآن."""
 
 
+# ════════════════════════════════════════════════════════════════
+# Writer class
+# ════════════════════════════════════════════════════════════════
+
 class ScriptWriter:
     """
-    Multi-pass script writer: Outline → Expand → Merge.
+    Multi-pass script writer: Outline → Sub-section Expand → Merge.
     
-    Strategy:
-    1. Call 1 (thinking ON): Generate detailed outline with key events
-    2. Calls 2-6 (thinking ON): Expand each chapter individually (300-400 words each)
-    3. Merge: Concatenate all chapters → 1500-2000+ words total
-    
-    This bypasses the token limit problem because each call only needs
-    to produce 300-400 words (fits easily in thinking mode budget).
+    Each LLM call handles only 2-3 bullet points = short thinking = always succeeds.
     """
 
     def __init__(self, config: dict):
         self.config = config
 
-    # Chapter definitions
     CHAPTERS = [
         ("المشهد الافتتاحي (الخطاف)", "1"),
         ("الفصل الأول: الجذور وبناء التوتر", "2"),
@@ -137,231 +133,208 @@ class ScriptWriter:
         ("الخاتمة: التأمل الفلسفي", "5"),
     ]
 
-    def write_script(
-        self,
-        topic: str,
-        research: dict,
-        seo_data: dict,
-        channel_config: dict,
-        performance_rules: list[dict] = None,
-    ) -> str:
-        """Write script using Outline → Expand → Merge strategy."""
+    def write_script(self, topic, research, seo_data, channel_config, performance_rules=None):
+        """Write script using Outline → Sub-section Expand → Merge."""
         
         research_text = research.get("research_text", f"الموضوع: {topic}")
         if len(research_text) > 6000:
-            research_text = research_text[:6000] + "\n\n[... المزيد من التفاصيل ...]"
+            research_text = research_text[:6000]
         angle = research.get("angle", "تحليل شامل")
 
-        # ─── Step 1: Generate Outline (thinking ON → quality planning) ───
-        logger.info(f"Script: Step 1/6 — generating outline for '{topic}'")
+        # ─── Step 1: Generate Outline ───
+        logger.info(f"Script: generating outline for '{topic}'")
         
         outline = generate(
-            prompt=OUTLINE_PROMPT.format(
-                topic=topic,
-                angle=angle,
-                research_text=research_text,
-            ),
+            prompt=OUTLINE_PROMPT.format(topic=topic, angle=angle, research_text=research_text),
             system=f"أنت خبير في التخطيط الوثائقي. خطط فقط لموضوع: {topic}",
             temperature=0.7,
         )
 
         if not outline or len(outline.strip()) < 100:
-            logger.error("Outline generation failed — empty result")
-            return self._fallback_single_pass(topic, angle, research_text)
+            logger.error("Outline generation failed")
+            return ""
 
-        # Validate outline is on-topic
+        # Validate on-topic
         topic_keywords = [w for w in topic.split() if len(w) > 2]
         if topic_keywords and not any(kw in outline for kw in topic_keywords):
-            logger.warning(f"Outline OFF-TOPIC! Retrying...")
+            logger.warning("Outline OFF-TOPIC! Retrying...")
             outline = generate(
                 prompt=f"⚠️ الموضوع هو \"{topic}\" حصراً.\n\n" + OUTLINE_PROMPT.format(
-                    topic=topic, angle=angle, research_text=research_text,
-                ),
-                system=f"اكتب مخططاً فقط عن: {topic}. لا موضوع آخر.",
+                    topic=topic, angle=angle, research_text=research_text),
+                system=f"اكتب مخططاً فقط عن: {topic}.",
                 temperature=0.5,
             )
             if not outline or len(outline.strip()) < 100:
-                return self._fallback_single_pass(topic, angle, research_text)
+                return ""
 
-        logger.info(f"Script: Outline ready ({len(outline.split())} words)")
-
-        # ─── Step 1.5: Extract duration from outline ───
+        # ─── Step 2: Extract duration ───
         total_minutes = self._extract_duration(outline)
-        total_words = int(total_minutes * 130)  # ~130 words/min for Arabic narration
-        
-        # Distribute words across chapters (hook shorter, middle chapters longer)
-        # Hook: 15%, Ch1: 25%, Ch2: 25%, Ch3: 20%, Conclusion: 15%
-        chapter_weights = [0.15, 0.25, 0.25, 0.20, 0.15]
-        chapter_word_targets = [int(total_words * w) for w in chapter_weights]
-        chapter_minute_targets = [round(total_minutes * w, 1) for w in chapter_weights]
-        
-        logger.info(f"Script: Duration {total_minutes} min, {total_words} words target, per-chapter: {chapter_word_targets}")
+        total_words = int(total_minutes * 130)
+        logger.info(f"Script: Outline ready — {total_minutes} min, {total_words} words target")
 
-        # ─── Step 2: Parse outline into chapter points ───
-        chapter_points = self._parse_outline_chapters(outline)
+        # ─── Step 3: Parse chapters into point lists ───
+        chapters = self._parse_outline_chapters(outline)
 
-        # ─── Step 3: Expand each chapter (thinking ON → deep writing) ───
-        chapters_text = []
+        # ─── Step 4: Expand each chapter by sub-sections ───
+        all_text = []
+        call_num = 1
+        total_calls = sum(max(1, (len(pts) + 2) // 3) for pts in chapters.values()) if chapters else 5
         
-        for i, (chapter_name, chapter_num) in enumerate(self.CHAPTERS):
-            ch_words = chapter_word_targets[i]
-            ch_minutes = chapter_minute_targets[i]
-            logger.info(f"Script: Step {i+2}/6 — expanding '{chapter_name}' (target: {ch_words} words, {ch_minutes} min)")
-            
-            points = chapter_points.get(chapter_num, "")
+        for chapter_name, chapter_num in self.CHAPTERS:
+            points = chapters.get(chapter_num, [])
             if not points:
-                points = f"راجع المخطط أعلاه للفصل رقم {chapter_num}"
+                points = [f"اكتب عن {chapter_name} في سياق {topic}"]
+            
+            # Split points into sub-sections of 2-3 points each
+            subsections = []
+            for i in range(0, len(points), 3):
+                subsections.append(points[i:i+3])
+            
+            chapter_parts = []
+            for j, sub_points in enumerate(subsections):
+                points_text = "\n".join(f"- {p}" for p in sub_points)
+                logger.info(f"Script: Call {call_num}/{total_calls} — {chapter_name} part {j+1}/{len(subsections)} ({len(sub_points)} points)")
+                
+                text = generate(
+                    prompt=SUBSECTION_PROMPT.format(
+                        topic=topic,
+                        chapter_name=chapter_name,
+                        points=points_text,
+                    ),
+                    system=WRITER_SYSTEM,
+                    temperature=0.6,
+                )
+                
+                if text and len(text.strip()) > 30:
+                    cleaned = self._extract_narration(text)
+                    chapter_parts.append(cleaned)
+                    logger.info(f"  → {len(cleaned.split())} words")
+                else:
+                    logger.warning(f"  → Empty response, retrying with shorter prompt")
+                    # Retry with even simpler prompt
+                    text = generate(
+                        prompt=f"الموضوع: {topic}\n\nاكتب فقرة وثائقية (150 كلمة) عن:\n{points_text}",
+                        system=WRITER_SYSTEM,
+                        temperature=0.6,
+                    )
+                    if text and len(text.strip()) > 30:
+                        cleaned = self._extract_narration(text)
+                        chapter_parts.append(cleaned)
+                        logger.info(f"  → Retry succeeded: {len(cleaned.split())} words")
+                    else:
+                        logger.warning(f"  → Skipped (both attempts empty)")
+                
+                call_num += 1
+            
+            if chapter_parts:
+                all_text.append("\n\n".join(chapter_parts))
 
-            chapter_text = generate(
-                prompt=CHAPTER_PROMPT.format(
-                    topic=topic,
-                    chapter_name=chapter_name,
-                    chapter_points=points,
-                    chapter_words=ch_words,
-                    chapter_minutes=ch_minutes,
-                ),
-                system=WRITER_SYSTEM,
-                temperature=0.6,
-            )
+        # ─── Step 5: Merge ───
+        if not all_text:
+            logger.error("All expansions failed")
+            return ""
 
-            if chapter_text and len(chapter_text.strip()) > 50:
-                cleaned = self._extract_narration(chapter_text)
-                chapters_text.append(cleaned)
-                logger.info(f"  → {chapter_name}: {len(cleaned.split())} words")
-            else:
-                logger.warning(f"  → {chapter_name}: expansion failed, skipping")
-
-        # ─── Step 4: Merge all chapters ───
-        if not chapters_text:
-            logger.error("All chapter expansions failed")
-            return self._fallback_single_pass(topic, angle, research_text)
-
-        full_script = "\n\n".join(chapters_text)
+        full_script = "\n\n".join(all_text)
         full_script = self._remove_youtube_cta(full_script)
         word_count = len(full_script.split())
-
-        logger.info(f"Script: Merge complete — {word_count} words from {len(chapters_text)} chapters")
+        logger.info(f"Script: Merge complete — {word_count} words from {len(all_text)} chapters, {call_num-1} LLM calls")
 
         return full_script
 
-    def _fallback_single_pass(self, topic: str, angle: str, research_text: str) -> str:
-        """Fallback: single-pass generation if multi-pass fails."""
-        logger.warning("Falling back to single-pass script generation")
-        result = generate(
-            prompt=f"""⚠️ الموضوع: {topic}
-الزاوية: {angle}
-
-اكتب سكربت وثائقي كامل عن "{topic}" — 5 فصول كما في تعليماتك.
-
-الحقائق المرجعية:
-{research_text}
-
-اكتب حصراً عن "{topic}". لا تكتب عن أي موضوع آخر.""",
-            system=WRITER_SYSTEM,
-            temperature=0.6,
-        )
-        if result:
-            return self._remove_youtube_cta(self._extract_narration(result))
-        return ""
-
     @staticmethod
-    def _extract_duration(outline: str) -> int:
-        """Extract DURATION_MINUTES from outline. Default 12 if not found."""
+    def _extract_duration(outline):
         match = re.search(r'DURATION_MINUTES:\s*(\d+)', outline)
         if match:
-            minutes = int(match.group(1))
-            # Clamp to reasonable range
-            minutes = max(6, min(30, minutes))
+            minutes = max(6, min(30, int(match.group(1))))
             logger.info(f"Qwen chose duration: {minutes} minutes")
             return minutes
-        logger.warning("No DURATION_MINUTES found in outline, defaulting to 12")
+        logger.warning("No DURATION_MINUTES found, defaulting to 12")
         return 12
 
-    def _parse_outline_chapters(self, outline: str) -> dict:
-        """Parse outline text into chapter sections."""
+    def _parse_outline_chapters(self, outline):
+        """Parse outline into {chapter_num: [list of point strings]}."""
         chapters = {}
         current_num = None
-        current_lines = []
-
+        
         for line in outline.split("\n"):
             stripped = line.strip()
             if not stripped:
                 continue
-
-            # Detect chapter headers (1. المشهد, 2. الفصل, etc.)
-            match = re.match(r'^(\d+)[\.\)]\s*', stripped)
-            if match:
-                # Save previous chapter
-                if current_num and current_lines:
-                    chapters[current_num] = "\n".join(current_lines)
-                current_num = match.group(1)
-                current_lines = [stripped]
-            elif current_num:
-                current_lines.append(stripped)
-
-        # Save last chapter
-        if current_num and current_lines:
-            chapters[current_num] = "\n".join(current_lines)
-
-        # If parsing failed, just split by rough sections
-        if not chapters:
-            logger.warning("Outline parsing failed — using full outline for all chapters")
-            for _, num in self.CHAPTERS:
-                chapters[num] = outline
-
+            
+            # Match CHAPTER_1:, CHAPTER_2:, etc.
+            ch_match = re.match(r'CHAPTER_(\d+):', stripped)
+            if ch_match:
+                current_num = ch_match.group(1)
+                chapters[current_num] = []
+                continue
+            
+            # Match numbered headers: 1. المشهد, 2. الفصل, etc.
+            num_match = re.match(r'^(\d+)[\.\)]\s*', stripped)
+            if num_match and not current_num:
+                current_num = num_match.group(1)
+                chapters[current_num] = []
+                continue
+            
+            # Bullet points under current chapter
+            if current_num and (stripped.startswith("-") or stripped.startswith("•") or stripped.startswith("*")):
+                point = stripped.lstrip("-•* ").strip()
+                if point and len(point) > 5:
+                    chapters[current_num].append(point)
+        
+        # Validate
+        if not chapters or all(len(v) == 0 for v in chapters.values()):
+            logger.warning("Outline parsing failed — splitting by sections")
+            # Fallback: split outline into 5 roughly equal sections
+            lines = [l.strip() for l in outline.split("\n") if l.strip() and not l.strip().startswith("DURATION")]
+            chunk_size = max(1, len(lines) // 5)
+            for i in range(5):
+                start = i * chunk_size
+                end = start + chunk_size if i < 4 else len(lines)
+                chapters[str(i+1)] = lines[start:end]
+        
+        for num, pts in chapters.items():
+            logger.info(f"  Chapter {num}: {len(pts)} points")
+        
         return chapters
 
-    def _extract_narration(self, raw_script: str) -> str:
-        """Extract narration text from structured script (remove cues/headers/directions)."""
+    def _extract_narration(self, raw_script):
+        """Extract narration text (remove cues/headers/directions)."""
         lines = raw_script.strip().split("\n")
         narration_lines = []
-
         for line in lines:
-            stripped = line.strip()
-            if not stripped:
+            s = line.strip()
+            if not s:
                 continue
-            # Skip direction cues in square brackets
-            if stripped.startswith("[") and stripped.endswith("]"):
+            if s.startswith("[") and s.endswith("]"):
                 continue
-            if stripped.startswith("- [") and "]" in stripped:
+            if s.startswith("- [") and "]" in s:
                 continue
-            # Skip markdown headers and code blocks
-            if stripped.startswith("##") or stripped.startswith("```"):
+            if s.startswith("##") or s.startswith("```"):
                 continue
-            # Skip scene/chapter headers
-            if stripped.startswith("المشهد") or stripped.startswith("الفصل"):
+            if s.startswith("المشهد") or s.startswith("الفصل"):
                 continue
-            # Skip title/header lines
-            if stripped.startswith("عنوان") or stripped.startswith("# ") or stripped.startswith("**عنوان"):
+            if s.startswith("عنوان") or s.startswith("# ") or s.startswith("**عنوان"):
                 continue
-            # Skip metadata lines
-            if stripped.startswith("**المدة") or stripped.startswith("**الموضوع") or stripped.startswith("**نوع"):
+            if s.startswith("**المدة") or s.startswith("**الموضوع"):
                 continue
-            # Skip narration/speaker markers
-            if stripped in ("🎙️ السرد:", "السرد:", "المذيع:", "المعلق:"):
+            if s in ("🎙️ السرد:", "السرد:", "المذيع:", "المعلق:"):
                 continue
-            # Strip speaker prefixes if inline
             for prefix in ("المذيع:", "المعلق:", "السرد:", "🎙️ السرد:", "الراوي:", "صوت الراوي:"):
-                if stripped.startswith(prefix):
-                    stripped = stripped[len(prefix):].strip()
+                if s.startswith(prefix):
+                    s = s[len(prefix):].strip()
                     break
-            # Skip emoji-prefixed direction lines
-            if stripped.startswith("📹") or stripped.startswith("🔊"):
+            if s.startswith("📹") or s.startswith("🔊"):
                 continue
-            # Skip standalone bold markers
-            if stripped.startswith("**") and stripped.endswith("**") and len(stripped) < 80:
+            if s.startswith("**") and s.endswith("**") and len(s) < 80:
                 continue
-            if stripped:
-                narration_lines.append(stripped)
-
-        if narration_lines:
-            return "\n\n".join(narration_lines)
-        return raw_script
+            if s:
+                narration_lines.append(s)
+        return "\n\n".join(narration_lines) if narration_lines else raw_script
 
     @staticmethod
-    def _remove_youtube_cta(text: str) -> str:
-        """Remove YouTube subscribe/like/bell CTA phrases."""
-        cta_patterns = [
+    def _remove_youtube_cta(text):
+        """Remove YouTube CTA phrases."""
+        patterns = [
             r'[فو]?لا\s*تنس[َى]\s*(الاشتراك|أن تشترك).*?[\.!؟\n]',
             r'اشترك\s*(في|ب)\s*القناة.*?[\.!؟\n]',
             r'فعّل\s*(زر\s*)?الجرس.*?[\.!؟\n]',
@@ -372,7 +345,6 @@ class ScriptWriter:
             r'تابعنا\s*(على|في).*?[\.!؟\n]',
             r'لا\s*تنس[َى]\s*(دعم|مشاركة).*?[\.!؟\n]',
         ]
-        for pattern in cta_patterns:
-            text = re.sub(pattern, '', text, flags=re.DOTALL)
-        text = re.sub(r'\n{3,}', '\n\n', text).strip()
-        return text
+        for p in patterns:
+            text = re.sub(p, '', text, flags=re.DOTALL)
+        return re.sub(r'\n{3,}', '\n\n', text).strip()
