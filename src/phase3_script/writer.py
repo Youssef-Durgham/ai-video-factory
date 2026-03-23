@@ -37,8 +37,8 @@ WRITER_SYSTEM = """[SYSTEM DIRECTIVE - CRITICAL OVERRIDE]
 </director_cues>
 
 <tashkeel_directive_for_tts>
-شكّل فقط: الأفعال المبنية للمجهول، الكلمات الملتبسة، وأواخر الكلمات عند الوقف.
-لا تشكّل الحروف العادية.
+ممنوع التشكيل نهائياً. لا تضع أي حركات (فتحة، ضمة، كسرة، سكون، شدة، تنوين) على أي حرف.
+اكتب النص بدون أي علامات تشكيل إطلاقاً. نظام TTS سيتولى النطق الصحيح تلقائياً.
 </tashkeel_directive_for_tts>
 
 <forbidden>
@@ -104,14 +104,18 @@ SUBSECTION_PROMPT = """الموضوع: "{topic}"
 اكتب فقرة سردية وثائقية عن النقاط التالية:
 {points}
 
-التعليمات:
-- اكتب 150-250 كلمة عن هذه النقاط فقط.
-- [بصري: ...] و [صوتي: ...] قبل السرد.
-- أسلوب العدسة المكبرة: تفصيل دقيق → صورة كبرى.
-- النص مباشرة بدون "المعلق:" أو "السرد:".
-- الأرقام بالحروف العربية.
-- ممنوع: اشتراك، إعجاب، جرس.
-
+## التعليمات الإجبارية:
+1. اكتب 150-250 كلمة عن هذه النقاط فقط.
+2. ابدأ بتوجيه بصري وصوتي بهذا الشكل بالضبط:
+   [بصري: وصف دقيق للقطة — حجم اللقطة، الإضاءة، العناصر المرئية]
+   [صوتي: نوع الموسيقى، المؤثرات الصوتية]
+   ثم اكتب السرد مباشرة.
+   ⚠️ التوجيه البصري والصوتي إجباري في بداية كل فقرة — لا تحذفه.
+3. الأرقام بالحروف العربية فقط.
+4. ممنوع التشكيل نهائياً (لا فتحة، لا ضمة، لا كسرة).
+5. ممنوع: اشتراك، إعجاب، جرس.
+6. اسرد حقائق وأحداث تاريخية محددة (أسماء، تواريخ، أماكن). لا تعتمد على الوصف الدرامي المجرد.
+{anti_repetition}
 اكتب الآن."""
 
 
@@ -195,15 +199,24 @@ class ScriptWriter:
                 subsections.append(points[i:i+3])
             
             chapter_parts = []
+            # Track used phrases to prevent repetition
+            used_phrases = set()
+            
             for j, sub_points in enumerate(subsections):
                 points_text = "\n".join(f"- {p}" for p in sub_points)
                 logger.info(f"Script: Call {call_num}/{total_calls} — {chapter_name} part {j+1}/{len(subsections)} ({len(sub_points)} points)")
+                
+                # Build anti-repetition warning from recently used phrases
+                anti_rep = ""
+                if used_phrases:
+                    anti_rep = "\n\n⚠️ عبارات مستخدمة سابقاً (لا تكررها): " + "، ".join(list(used_phrases)[-10:])
                 
                 text = generate(
                     prompt=SUBSECTION_PROMPT.format(
                         topic=topic,
                         chapter_name=chapter_name,
                         points=points_text,
+                        anti_repetition=anti_rep,
                     ),
                     system=WRITER_SYSTEM,
                     temperature=0.6,
@@ -211,7 +224,12 @@ class ScriptWriter:
                 
                 if text and len(text.strip()) > 30:
                     cleaned = self._extract_narration(text)
+                    cleaned = self._strip_tashkeel(cleaned)  # Remove any diacritics
                     chapter_parts.append(cleaned)
+                    # Track distinctive phrases to prevent repetition
+                    for phrase in re.findall(r'[\u0600-\u06FF]{3,}\s+[\u0600-\u06FF]{3,}\s+[\u0600-\u06FF]{3,}', cleaned):
+                        if len(phrase) > 15:
+                            used_phrases.add(phrase[:30])
                     logger.info(f"  → {len(cleaned.split())} words")
                 else:
                     logger.warning(f"  → Empty response, retrying with shorter prompt")
@@ -223,6 +241,7 @@ class ScriptWriter:
                     )
                     if text and len(text.strip()) > 30:
                         cleaned = self._extract_narration(text)
+                        cleaned = self._strip_tashkeel(cleaned)
                         chapter_parts.append(cleaned)
                         logger.info(f"  → Retry succeeded: {len(cleaned.split())} words")
                     else:
@@ -239,6 +258,7 @@ class ScriptWriter:
             return ""
 
         full_script = "\n\n".join(all_text)
+        full_script = self._strip_tashkeel(full_script)
         full_script = self._remove_youtube_cta(full_script)
         word_count = len(full_script.split())
         logger.info(f"Script: Merge complete — {word_count} words from {len(all_text)} chapters, {call_num-1} LLM calls")
@@ -334,6 +354,13 @@ class ScriptWriter:
             if s:
                 narration_lines.append(s)
         return "\n\n".join(narration_lines) if narration_lines else raw_script
+
+    @staticmethod
+    def _strip_tashkeel(text):
+        """Remove ALL Arabic diacritical marks (tashkeel/harakat).
+        LLMs add random incorrect tashkeel. Modern TTS handles plain text better."""
+        # Arabic diacritics Unicode range: 0x064B-0x065F (fathah, dammah, kasrah, sukun, shadda, etc.)
+        return re.sub(r'[\u064B-\u065F\u0670]', '', text)
 
     @staticmethod
     def _remove_youtube_cta(text):
