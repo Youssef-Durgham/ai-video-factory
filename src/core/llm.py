@@ -23,11 +23,23 @@ def generate(
     temperature: float = 0.7,
     max_tokens: int = 4096,
     json_mode: bool = False,
+    think: bool = True,
 ) -> str:
-    """Generate text from Ollama. Returns raw string response."""
+    """Generate text from Ollama. Returns raw string response.
+    
+    Args:
+        think: Enable/disable thinking mode. Disable for long-form creative
+               writing to avoid thinking consuming the output token budget.
+    """
+    # Qwen 3.5 thinking mode: /no_think disables internal reasoning
+    # This is critical for scripts — thinking eats 80%+ of num_predict budget
+    actual_prompt = prompt
+    if not think:
+        actual_prompt = f"/no_think\n{prompt}"
+
     payload = {
         "model": model,
-        "prompt": prompt,
+        "prompt": actual_prompt,
         "stream": False,
         "options": {
             "temperature": temperature,

@@ -107,6 +107,7 @@ class ScriptWriter:
             system=WRITER_SYSTEM,
             max_tokens=16384,
             temperature=0.6,
+            think=False,  # Disable thinking — it eats 80%+ of output tokens
         )
 
         if not result:
@@ -123,6 +124,7 @@ class ScriptWriter:
                 system=WRITER_SYSTEM,
                 max_tokens=16384,
                 temperature=0.4,
+                think=False,
             )
             if not result:
                 return ""
@@ -141,6 +143,7 @@ class ScriptWriter:
                 system=WRITER_SYSTEM,
                 max_tokens=16384,
                 temperature=0.6,
+                think=False,
             )
             if result2 and len(result2.split()) > word_count:
                 script_text = self._extract_narration(result2)
@@ -190,7 +193,30 @@ class ScriptWriter:
             narration_lines.append(stripped)
 
         if narration_lines:
-            return "\n\n".join(narration_lines)
+            text = "\n\n".join(narration_lines)
+            return self._remove_youtube_cta(text)
 
         # Fallback: return raw script
-        return raw_script
+        return self._remove_youtube_cta(raw_script)
+
+    @staticmethod
+    def _remove_youtube_cta(text: str) -> str:
+        """Remove YouTube subscribe/like/bell CTA phrases that LLMs love to inject."""
+        import re
+        # Common YouTube CTA patterns in Arabic
+        cta_patterns = [
+            r'[فو]?لا\s*تنس[َى]\s*(الاشتراك|أن تشترك).*?(الجرس|القناة|إعجاب).*?[\.!؟\n]',
+            r'اشترك\s*(في|ب)\s*القناة.*?[\.!؟\n]',
+            r'فعّل\s*(زر\s*)?الجرس.*?[\.!؟\n]',
+            r'اضغط\s*(على\s*)?(زر\s*)?(الإعجاب|اللايك|الاشتراك).*?[\.!؟\n]',
+            r'شارك\s*(هذا\s*)?(الفيديو|المقطع).*?(أصدقائك|معارفك).*?[\.!؟\n]',
+            r'اترك\s*(لنا\s*)?(تعليق|رأيك).*?[\.!؟\n]',
+            r'ادعم\s*القناة.*?[\.!؟\n]',
+            r'تابعنا\s*(على|في).*?[\.!؟\n]',
+            r'لا\s*تنس[َى]\s*(دعم|مشاركة).*?[\.!؟\n]',
+        ]
+        for pattern in cta_patterns:
+            text = re.sub(pattern, '', text, flags=re.DOTALL)
+        # Clean up leftover whitespace
+        text = re.sub(r'\n{3,}', '\n\n', text).strip()
+        return text
