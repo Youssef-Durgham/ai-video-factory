@@ -129,23 +129,65 @@ class SceneSplitter:
             "visual", "cinematic_photorealistic"
         )
 
-        prompt = SPLITTER_PROMPT.format(
-            script_text=script_text,
-            topic=topic,
-            region=region,
-            visual_style=visual_style,
-            channel_style=channel_config.get("content", {}).get("tone", "educational, engaging"),
-        )
+        # Split script into paragraphs and process each separately
+        # This prevents thinking from exhausting tokens on the full script
+        paragraphs = [p.strip() for p in script_text.split("\n\n") if p.strip() and len(p.strip()) > 20]
+        
+        if not paragraphs:
+            paragraphs = [script_text]
 
+        logger.info(f"Splitting {len(paragraphs)} paragraphs into scenes")
+
+        all_scenes = []
+        scene_idx = 0
+        
         try:
-            result = generate_json(
-                prompt=prompt,
-                system=SPLITTER_SYSTEM,
-                temperature=0.5,
-                # Uses DEFAULT_PREDICT (24K) — don't override
-            )
+            for pi, para in enumerate(paragraphs):
+                para_prompt = f"""قسّم هذه الفقرة إلى مشهد أو مشهدين:
 
-            scenes = result.get("scenes", []) if result else []
+الفقرة:
+{para}
+
+الموضوع: {topic}
+المنطقة: {region}
+النمط البصري: {visual_style}
+
+مهم جداً: اكتب JSON مباشرة:
+{{"scenes": [{{"scene_index": {scene_idx}, "narration_text": "...", "duration_seconds": 10, "visual_prompt": "English FLUX prompt...", "visual_style": "photorealistic_cinematic", "camera_movement": "slow_zoom_in", "music_mood": "dramatic", "sfx": [], "text_overlay": null, "expected_visual_elements": [], "transition_to_next": "crossfade", "voice_emotion": "calm"}}]}}"""
+
+                result = generate_json(
+                    prompt=para_prompt,
+                    system=SPLITTER_SYSTEM,
+                    temperature=0.5,
+                )
+
+                para_scenes = result.get("scenes", []) if result else []
+                
+                if not para_scenes:
+                    # Fallback: create a simple scene from the paragraph
+                    logger.warning(f"  Paragraph {pi+1}: JSON failed, creating basic scene")
+                    para_scenes = [{
+                        "scene_index": scene_idx,
+                        "narration_text": para,
+                        "duration_seconds": max(5, min(15, len(para.split()) // 3)),
+                        "visual_prompt": f"Documentary scene about {topic}, photorealistic, cinematic lighting",
+                        "visual_style": "photorealistic_cinematic",
+                        "camera_movement": "slow_zoom_in",
+                        "music_mood": "dramatic",
+                        "sfx": [],
+                        "text_overlay": None,
+                        "expected_visual_elements": [],
+                        "transition_to_next": "crossfade",
+                        "voice_emotion": "calm",
+                    }]
+                
+                for s in para_scenes:
+                    s["scene_index"] = scene_idx
+                    scene_idx += 1
+                all_scenes.extend(para_scenes)
+                logger.info(f"  Paragraph {pi+1}/{len(paragraphs)}: {len(para_scenes)} scenes")
+
+            scenes = all_scenes
 
             # Post-process: enhance visual prompts with regional accuracy
             for scene in scenes:
